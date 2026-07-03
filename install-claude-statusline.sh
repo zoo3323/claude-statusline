@@ -1,7 +1,7 @@
 #!/bin/bash
 # Claude Code 상태줄 + Codex 훅 + 대시보드 설치 스크립트.
 # 이 파일 하나만 다른 머신에 복사해서 실행하면 됨:
-#   scp ~/.claude/scripts/install-claude-statusline.sh 서버:/tmp/ && ssh 서버 'bash /tmp/install-claude-statusline.sh'
+#   curl -fsSL https://raw.githubusercontent.com/zoo3323/claude-statusline/main/install-claude-statusline.sh | bash
 set -e
 
 command -v jq >/dev/null 2>&1 || {
@@ -111,24 +111,45 @@ if [ -n "$session_id" ]; then
 fi
 case "$count" in ''|*[!0-9]*) count=0 ;; esac
 
-# Codex 계정 사용량 — 최근 codex 세션 로그의 rate_limits에서 추출
+# Codex 계정 사용량 — 5분마다 백그라운드로 API 조회(모델 요청 아님, 사용량 소모 없음).
+# 캐시와 codex 세션 로그 중 더 최신 데이터를 사용한다.
 # (테마: OpenAI 그린 #10A37F, 가로 = 5h 남은 양, 높이 = 주간 사용량, ↻ = 리셋까지 남은 시간)
-cu_line=""
+mtime_of() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
+CU_CACHE="$HOME/.claude/codex-status/codex-usage.json"
+CU_MARK="$HOME/.claude/codex-status/codex-usage.last"
+now_s=$(date +%s)
+cache_m=0; [ -f "$CU_CACHE" ] && cache_m=$(mtime_of "$CU_CACHE")
+mark_m=0; [ -f "$CU_MARK" ] && mark_m=$(mtime_of "$CU_MARK")
+# 캐시가 5분 넘게 오래됐으면 백그라운드 새로고침 (실패 반복 방지: 시도 간격 60초)
+if [ $((now_s - cache_m)) -gt 300 ] && [ $((now_s - mark_m)) -gt 60 ] && [ -f "$HOME/.codex/auth.json" ]; then
+  touch "$CU_MARK"
+  ( "$HOME/.claude/scripts/codex-usage-refresh.sh" >/dev/null 2>&1 & )
+fi
+
+# 세션 로그의 최신 rate_limits (codex 실행 직후엔 이쪽이 더 최신일 수 있음)
+cu_line=""; sess_m=0
 for cf in $(ls -t "$HOME/.codex/sessions"/*/*/*/rollout-*.jsonl 2>/dev/null | head -3); do
   cu_line=$(grep '"rate_limits"' "$cf" 2>/dev/null | tail -1)
-  [ -n "$cu_line" ] && break
+  [ -n "$cu_line" ] && { sess_m=$(mtime_of "$cf"); break; }
 done
-# Codex 사용량 게이지 세그먼트 (claude 게이지와 같은 형식, 라벨은 OpenAI 그린)
-cu_part=""
-if [ -n "$cu_line" ]; then
+
+cu_pct=""; cu7_pct=""; cu_reset=""
+if [ -f "$CU_CACHE" ] && [ "$cache_m" -ge "$sess_m" ]; then
+  cu_pct=$(jq -r '.rate_limit.primary_window.used_percent // empty | floor' "$CU_CACHE" 2>/dev/null)
+  cu7_pct=$(jq -r '.rate_limit.secondary_window.used_percent // empty | floor' "$CU_CACHE" 2>/dev/null)
+  cu_reset=$(jq -r '.rate_limit.primary_window.reset_at // empty' "$CU_CACHE" 2>/dev/null)
+elif [ -n "$cu_line" ]; then
   cu_pct=$(echo "$cu_line" | jq -r '.payload.rate_limits.primary.used_percent // empty | floor' 2>/dev/null)
   cu7_pct=$(echo "$cu_line" | jq -r '.payload.rate_limits.secondary.used_percent // empty | floor' 2>/dev/null)
   cu_reset=$(echo "$cu_line" | jq -r '.payload.rate_limits.primary.resets_at // empty' 2>/dev/null)
-  if [ -n "$cu_pct" ]; then
-    cu_part="$(printf '\033[38;2;16;163;127mcodex\033[0m ')$(usage_gauge "$cu_pct" "$cu7_pct" '\033[38;2;16;163;127m')"
-    crt=$(reset_txt "$cu_reset")
-    [ -n "$crt" ] && cu_part="$cu_part $crt"
-  fi
+fi
+
+# Codex 사용량 게이지 세그먼트 (claude 게이지와 같은 형식, 라벨은 OpenAI 그린)
+cu_part=""
+if [ -n "$cu_pct" ]; then
+  cu_part="$(printf '\033[38;2;16;163;127mcodex\033[0m ')$(usage_gauge "$cu_pct" "$cu7_pct" '\033[38;2;16;163;127m')"
+  crt=$(reset_txt "$cu_reset")
+  [ -n "$crt" ] && cu_part="$cu_part $crt"
 fi
 
 # Codex 실행 상태 표시 (맨 오른쪽에 배치)
@@ -348,6 +369,34 @@ while true; do
 done
 EMBEDDED_claude-dashboard.sh
 chmod +x "$SCRIPTS_DIR/claude-dashboard.sh"
+
+cat > "$SCRIPTS_DIR/codex-usage-refresh.sh" <<'EMBEDDED_codex-usage-refresh.sh'
+#!/bin/bash
+# Codex 계정 사용량을 백엔드 API에서 조회해 캐시에 저장.
+# 모델 요청이 아니라 계정 정보 조회라 사용량을 소모하지 않는다.
+# statusline-codex.sh 가 5분에 한 번 백그라운드로 호출한다.
+export PATH="$HOME/.local/bin:$PATH"
+
+AUTH="$HOME/.codex/auth.json"
+CACHE="$HOME/.claude/codex-status/codex-usage.json"
+[ -f "$AUTH" ] || exit 0
+
+TOKEN=$(jq -r '.tokens.access_token // empty' "$AUTH" 2>/dev/null)
+ACC=$(jq -r '.tokens.account_id // empty' "$AUTH" 2>/dev/null)
+[ -z "$TOKEN" ] && exit 0
+
+mkdir -p "$HOME/.claude/codex-status"
+out=$(curl -s --max-time 8 \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "chatgpt-account-id: $ACC" \
+  "https://chatgpt.com/backend-api/wham/usage")
+
+# 유효한 응답일 때만 캐시 갱신 (원자적 쓰기)
+if printf '%s' "$out" | jq -e '.rate_limit.primary_window.used_percent' >/dev/null 2>&1; then
+  printf '%s' "$out" > "$CACHE.tmp" && mv "$CACHE.tmp" "$CACHE"
+fi
+EMBEDDED_codex-usage-refresh.sh
+chmod +x "$SCRIPTS_DIR/codex-usage-refresh.sh"
 
 # settings.json 에 statusLine + codex 훅 병합 (기존 설정 보존, 백업 생성)
 SETTINGS="$CLAUDE_DIR/settings.json"
