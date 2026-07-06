@@ -1,5 +1,5 @@
 #!/bin/bash
-# Claude Code 상태줄 + Codex 훅 + 대시보드 설치 스크립트.
+# Claude Code 상태줄 + Codex 훅 설치 스크립트.
 # 이 파일 하나만 다른 머신에 복사해서 실행하면 됨:
 #   curl -fsSL https://raw.githubusercontent.com/zoo3323/claude-statusline/main/install-claude-statusline.sh | bash
 set -e
@@ -16,16 +16,9 @@ mkdir -p "$SCRIPTS_DIR" "$CLAUDE_DIR/codex-status"
 cat > "$SCRIPTS_DIR/statusline-codex.sh" <<'EMBEDDED_statusline-codex.sh'
 #!/bin/bash
 # Claude Code statusLine: folder | model (effort) | ctx gauge | 5h limit gauge | Codex status
-# Also persists the raw input JSON per session for the dashboard (claude-dashboard.sh).
 input=$(cat)
 
 session_id=$(echo "$input" | jq -r '.session_id // empty')
-
-# 대시보드용 세션 상태 저장 (원본 입력 그대로)
-if [ -n "$session_id" ]; then
-  mkdir -p "$HOME/.claude/codex-status"
-  echo "$input" > "$HOME/.claude/codex-status/${session_id}.state.json"
-fi
 
 dir_name=$(basename "$(echo "$input" | jq -r '.workspace.current_dir // .cwd // "."')")
 model=$(echo "$input" | jq -r '.model.display_name // "Claude"')
@@ -249,127 +242,6 @@ exit 0
 EMBEDDED_codex-status-set.sh
 chmod +x "$SCRIPTS_DIR/codex-status-set.sh"
 
-cat > "$SCRIPTS_DIR/claude-dashboard.sh" <<'EMBEDDED_claude-dashboard.sh'
-#!/bin/bash
-# Claude 세션 대시보드 — cmux/tmux 오른쪽 pane에서 실행:
-#   tmux split-window -h -l 58 ~/.claude/scripts/claude-dashboard.sh
-# 상태줄 훅이 2초마다 남기는 ~/.claude/codex-status/<sid>.state.json 을 집계한다.
-# 60초 이상 갱신 없는 세션은 종료된 것으로 보고 숨긴다.
-
-STATUS_DIR="$HOME/.claude/codex-status"
-TASKS_DIR="$HOME/.claude/tasks"
-STALE_SECS=60
-
-C_DIM=$'\033[2m'; C_BOLD=$'\033[1m'; C_GRN=$'\033[32m'; C_YEL=$'\033[33m'
-C_RED=$'\033[31m'; C_CYN=$'\033[36m'; C_RST=$'\033[0m'
-
-gauge() { # gauge <pct> <width>
-  local pct=$1 width=$2 filled bar="" i
-  filled=$(( (pct * width + 50) / 100 )); [ "$filled" -gt "$width" ] && filled=$width
-  for ((i=0; i<width; i++)); do
-    [ "$i" -lt "$filled" ] && bar="${bar}▰" || bar="${bar}▱"
-  done
-  printf '%s' "$bar"
-}
-
-pct_color() { # pct_color <pct>
-  if [ "$1" -ge 90 ]; then printf '%s' "$C_RED"
-  elif [ "$1" -ge 70 ]; then printf '%s' "$C_YEL"
-  else printf '%s' "$C_GRN"; fi
-}
-
-render() {
-  local now shown=0 rate_line=""
-  now=$(date +%s)
-  echo "${C_BOLD}${C_CYN} Claude Sessions${C_RST}  ${C_DIM}$(date '+%H:%M:%S')${C_RST}"
-  echo "${C_DIM}──────────────────────────────────────────────${C_RST}"
-
-  for f in "$STATUS_DIR"/*.state.json; do
-    [ -e "$f" ] || continue
-    local mtime age sid
-    mtime=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0)
-    age=$((now - mtime))
-    [ "$age" -gt "$STALE_SECS" ] && continue
-    sid=$(basename "$f" .state.json)
-
-    local name dir model effort ctx cost mins codex sname
-    eval "$(jq -r '
-      "dir=\(.workspace.current_dir // .cwd // "." | @sh)
-       model=\(.model.display_name // "Claude" | @sh)
-       effort=\(.effort.level // "" | @sh)
-       ctx=\(.context_window.used_percentage // -1 | floor)
-       cost=\(.cost.total_cost_usd // 0)
-       mins=\((.cost.total_duration_ms // 0) / 60000 | floor)
-       sname=\(.session_name // "" | @sh)
-       r5=\(.rate_limits.five_hour.used_percentage // -1 | floor)
-       r7=\(.rate_limits.seven_day.used_percentage // -1 | floor)"
-    ' "$f")"
-    dir=$(basename "$dir")
-
-    # Codex in-flight count
-    local cnt=0
-    [ -f "$STATUS_DIR/${sid}.count" ] && cnt=$(cat "$STATUS_DIR/${sid}.count" 2>/dev/null || echo 0)
-    case "$cnt" in ''|*[!0-9]*) cnt=0 ;; esac
-    if [ "$cnt" -gt 0 ]; then
-      codex="${C_GRN}🟢 codex×${cnt}${C_RST}"
-    else
-      codex="${C_DIM}⚪${C_RST}"
-    fi
-
-    # 헤더 줄: 폴더 · 모델(effort) · codex
-    local eff_txt=""
-    [ -n "$effort" ] && eff_txt=" (${effort})"
-    printf ' %s%-12s%s %s%s  %b\n' "$C_BOLD" "$dir" "$C_RST" "$model" "$eff_txt" "$codex"
-    [ -n "$sname" ] && printf '   %s%.44s%s\n' "$C_DIM" "$sname" "$C_RST"
-
-    # ctx 게이지 + 비용/시간
-    local line2=""
-    if [ "$ctx" -ge 0 ]; then
-      line2="$(pct_color "$ctx")$(gauge "$ctx" 10) ${ctx}%${C_RST}"
-    fi
-    local dur_txt="${mins}m"
-    [ "$mins" -ge 60 ] && dur_txt="$((mins/60))h $((mins%60))m"
-    printf '   %b  %s\n' "$line2" "$(printf '$%.2f · %s' "$cost" "$dur_txt")"
-
-    # 진행 중 태스크 (in_progress만)
-    if [ -d "$TASKS_DIR/$sid" ]; then
-      jq -r 'select(.status == "in_progress") | "   ▸ " + (.activeForm // .subject)' \
-        "$TASKS_DIR/$sid"/*.json 2>/dev/null | head -3 | while IFS= read -r t; do
-        printf '%s%s%s\n' "$C_YEL" "$t" "$C_RST"
-      done
-    fi
-
-    # rate limit 은 아무 세션에서나 하나 잡으면 됨 (계정 공통)
-    if [ -z "$rate_line" ] && [ "${r5:-\-1}" -ge 0 ]; then
-      rate_line=" rate  5h $(pct_color "$r5")$(gauge "$r5" 8) ${r5}%${C_RST}   7d $(pct_color "$r7")$(gauge "$r7" 8) ${r7}%${C_RST}"
-    fi
-    echo ""
-    shown=$((shown + 1))
-  done
-
-  [ "$shown" -eq 0 ] && echo " ${C_DIM}활성 세션 없음${C_RST}" && echo ""
-  echo "${C_DIM}──────────────────────────────────────────────${C_RST}"
-  [ -n "$rate_line" ] && echo -e "$rate_line"
-}
-
-# --once: 한 번만 렌더하고 종료 (테스트용)
-if [ "$1" = "--once" ]; then
-  render
-  exit 0
-fi
-
-# 메인 루프
-trap 'tput cnorm; exit 0' INT TERM
-tput civis 2>/dev/null
-while true; do
-  out=$(render)
-  clear
-  echo "$out"
-  sleep 2
-done
-EMBEDDED_claude-dashboard.sh
-chmod +x "$SCRIPTS_DIR/claude-dashboard.sh"
-
 cat > "$SCRIPTS_DIR/codex-usage-refresh.sh" <<'EMBEDDED_codex-usage-refresh.sh'
 #!/bin/bash
 # Codex 계정 사용량을 백엔드 API에서 조회해 캐시에 저장.
@@ -411,14 +283,6 @@ jq '
   | .hooks.PostToolUseFailure = ((.hooks.PostToolUseFailure // []) | map(select(.matcher != "mcp__codex__codex|mcp__codex__codex-reply")) + [{matcher: "mcp__codex__codex|mcp__codex__codex-reply", hooks: [{type: "command", command: "~/.claude/scripts/codex-status-set.sh dec 2>/dev/null || true"}]}])
 ' "$SETTINGS" > "$SETTINGS.tmp" && mv "$SETTINGS.tmp" "$SETTINGS"
 
-# claude-dash alias (zsh/bash 중 있는 쪽에)
-for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
-  if [ -f "$rc" ] && ! grep -q 'claude-dash' "$rc"; then
-    printf '\nalias claude-dash="$HOME/.claude/scripts/claude-dashboard.sh"\n' >> "$rc"
-  fi
-done
-
 echo "✅ 설치 완료"
 echo "   - 상태줄: Claude Code를 새로 시작하면 하단에 표시됩니다"
-echo "   - 대시보드: 새 셸에서 claude-dash 실행"
 echo "   - 백업: $SETTINGS.bak.*"
