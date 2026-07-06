@@ -14,7 +14,6 @@ Claude Code CLI 하단에 **Claude / Codex 사용량, 컨텍스트, Codex 실행
 - **Codex 실행 상태** — Codex MCP 호출을 훅으로 감지해 `◌ codex`(대기) / `◜ codex ×2 작업중`(스피너 회전, 병렬 개수 표시)
 - **컨텍스트 게이지** — 터미널 오른쪽 끝에 정렬
 - **진행 중 태스크** — Claude Code 태스크 목록의 in_progress 항목을 노란색으로 표시
-- **세션 대시보드** (`claude-dash`) — 여러 Claude Code 세션을 별도 터미널에서 한눈에 모니터링
 - 토큰/API 사용 없음 — 전부 로컬 셸 스크립트
 
 ## 설치
@@ -44,7 +43,6 @@ bash install-claude-statusline.sh
 |---|---|
 | `~/.claude/scripts/statusline-codex.sh` | 상태줄 렌더링 |
 | `~/.claude/scripts/codex-status-set.sh` | Codex MCP 호출 감지 카운터 (훅) |
-| `~/.claude/scripts/claude-dashboard.sh` | 멀티 세션 대시보드 (`claude-dash`) |
 | `~/.claude/settings.json` | `statusLine` + Codex 훅 3개 병합 (기존 설정 보존, `.bak` 백업 생성) |
 
 ## 제거
@@ -53,7 +51,7 @@ bash install-claude-statusline.sh
 # settings.json 백업 복원 (설치 시 만들어진 .bak 파일)
 cp ~/.claude/settings.json.bak.<날짜> ~/.claude/settings.json
 rm -rf ~/.claude/scripts/statusline-codex.sh ~/.claude/scripts/codex-status-set.sh \
-       ~/.claude/scripts/claude-dashboard.sh ~/.claude/codex-status
+       ~/.claude/codex-status
 ```
 
 ## 업데이트
