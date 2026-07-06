@@ -11,7 +11,10 @@ curl -fsSL https://raw.githubusercontent.com/zoo3323/claude-statusline/main/inst
 ## 사용법
 
 - 설치 후 Claude Code 재시작
-- 사용량 즉시 새로고침: 터미널 `cu-refresh` / Claude Code 안 `/refresh`
+```bash
+# 사용량 즉시 새로고침
+/refresh
+```
 
 ## 업데이트
 
