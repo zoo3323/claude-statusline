@@ -4,14 +4,43 @@
 #   curl -fsSL https://raw.githubusercontent.com/zoo3323/claude-statusline/main/install-claude-statusline.sh | bash
 set -e
 
-command -v jq >/dev/null 2>&1 || {
-  echo "❌ jq가 필요합니다. 먼저 설치하세요: (mac) brew install jq / (ubuntu) sudo apt install -y jq"
-  exit 1
-}
-
 CLAUDE_DIR="$HOME/.claude"
 SCRIPTS_DIR="$CLAUDE_DIR/scripts"
+LOCAL_BIN="$HOME/.local/bin"
 mkdir -p "$SCRIPTS_DIR" "$CLAUDE_DIR/codex-status"
+
+# jq가 없으면 관리자 권한 없이 자동으로 받아서 씀 (brew/apt 필요 없음)
+if ! command -v jq >/dev/null 2>&1; then
+  echo "ℹ️  jq가 없어서 자동으로 설치합니다 (관리자 권한 불필요)..."
+  mkdir -p "$LOCAL_BIN"
+  JQ_VER="jq-1.7.1"
+  case "$(uname -s)" in
+    Darwin) case "$(uname -m)" in
+              arm64) JQ_ASSET="jq-macos-arm64" ;;
+              *)     JQ_ASSET="jq-macos-amd64" ;;
+            esac ;;
+    Linux)  case "$(uname -m)" in
+              aarch64|arm64) JQ_ASSET="jq-linux-arm64" ;;
+              *)             JQ_ASSET="jq-linux-amd64" ;;
+            esac ;;
+    *) echo "❌ 자동 설치를 지원하지 않는 OS입니다. jq를 직접 설치한 뒤 다시 실행하세요."; exit 1 ;;
+  esac
+  if ! curl -fsSL -o "$LOCAL_BIN/jq" "https://github.com/jqlang/jq/releases/download/${JQ_VER}/${JQ_ASSET}"; then
+    echo "❌ jq 자동 다운로드 실패. 수동 설치 후 다시 실행하세요: (mac) brew install jq / (ubuntu) sudo apt install -y jq"
+    exit 1
+  fi
+  chmod +x "$LOCAL_BIN/jq"
+  export PATH="$LOCAL_BIN:$PATH"
+  command -v jq >/dev/null 2>&1 || { echo "❌ jq 설치 후에도 인식되지 않습니다."; exit 1; }
+  echo "✅ jq를 $LOCAL_BIN/jq 에 설치했습니다"
+fi
+
+# ~/.local/bin 이 PATH에 없는 셸 설정 파일에는 추가 (다음 셸부터 jq/cu-refresh 인식)
+for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
+  if [ -f "$rc" ] && ! grep -q '\.local/bin' "$rc"; then
+    printf '\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$rc"
+  fi
+done
 
 cat > "$SCRIPTS_DIR/statusline-codex.sh" <<'EMBEDDED_statusline-codex.sh'
 #!/bin/bash
