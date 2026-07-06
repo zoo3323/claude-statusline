@@ -10,7 +10,7 @@ Claude Code CLI 하단에 Claude/Codex 사용량, 컨텍스트, Codex 실행 상
 - Codex 실행 상태 표시 (대기/작업중, 병렬 개수)
 - 컨텍스트 게이지
 - 진행 중 태스크 표시
-- `cu-refresh` / `/refresh`로 사용량 즉시 새로고침
+- `/refresh`로 사용량 즉시 새로고침
 
 ## 설치
 
