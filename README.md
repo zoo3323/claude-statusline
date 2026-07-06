@@ -1,6 +1,6 @@
 # claude-statusline
 
-Claude Code CLI 하단에 **Claude / Codex 사용량, 컨텍스트, Codex 실행 상태**를 한 줄로 보여주는 상태줄 커스터마이징입니다. 설치 스크립트 하나로 끝납니다.
+Claude Code CLI 하단에 **Claude / Codex 사용량, 컨텍스트, Codex 실행 상태**를 한 줄로 보여주는 상태줄 커스터마이징입니다. 설치도 제거도 스크립트 하나로 끝납니다.
 
 ![statusline preview](assets/statusline.svg)
 
@@ -23,20 +23,14 @@ Claude Code CLI 하단에 **Claude / Codex 사용량, 컨텍스트, Codex 실행
 curl -fsSL https://raw.githubusercontent.com/zoo3323/claude-statusline/main/install-claude-statusline.sh | bash
 ```
 
-또는 파일을 받아서 직접 실행:
-
-```bash
-bash install-claude-statusline.sh
-```
+`jq`가 없으면 관리자 권한 없이 설치 스크립트가 알아서 `~/.local/bin`에 받아서 씁니다 — `brew`나 `apt`, sudo 권한이 없는 서버에서도 별도 준비 없이 위 명령 한 줄로 끝납니다.
 
 설치 후 Claude Code를 재시작하면 하단에 상태줄이 나타납니다.
 
-### 요구사항
+### 참고
 
-- `jq` — macOS: `brew install jq` / Ubuntu: `sudo apt install -y jq`
-  - sudo가 없는 서버: `mkdir -p ~/.local/bin && curl -sL -o ~/.local/bin/jq https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64 && chmod +x ~/.local/bin/jq`
-- `perl` (한글 정렬 폭 계산용 — macOS/Linux 기본 포함)
 - Codex 관련 표시는 [Codex CLI](https://github.com/openai/codex)와 Codex MCP 연동이 있을 때만 나타나고, 없으면 해당 부분만 조용히 생략됩니다.
+- 한글/CJK 정렬 폭 계산에 `perl`을 쓰는데, 없어도 동작에는 지장 없습니다(컨텍스트 게이지 오른쪽 정렬만 살짝 어긋날 수 있음). 대부분 시스템에 기본으로 깔려 있어 신경 쓸 필요 없습니다.
 
 ## 설치되는 것
 
@@ -47,18 +41,16 @@ bash install-claude-statusline.sh
 | `~/.claude/scripts/codex-usage-refresh.sh` | Codex 계정 사용량 조회 (자동 5분 주기 + 수동 새로고침) |
 | `~/.claude/skills/refresh/SKILL.md` | Claude Code 안에서 `/refresh`로 즉시 새로고침 |
 | `cu-refresh` alias (`.zshrc`/`.bashrc`) | 터미널에서 즉시 새로고침 |
+| `~/.local/bin/jq` | jq가 없던 경우에만, 관리자 권한 없이 설치 |
 | `~/.claude/settings.json` | `statusLine` + Codex 훅 3개 병합 (기존 설정 보존, `.bak` 백업 생성) |
 
 ## 제거
 
 ```bash
-# settings.json 백업 복원 (설치 시 만들어진 .bak 파일)
-cp ~/.claude/settings.json.bak.<날짜> ~/.claude/settings.json
-rm -rf ~/.claude/scripts/statusline-codex.sh ~/.claude/scripts/codex-status-set.sh \
-       ~/.claude/scripts/codex-usage-refresh.sh ~/.claude/skills/refresh \
-       ~/.claude/codex-status
-# .zshrc / .bashrc 에서 cu-refresh alias 줄도 삭제
+curl -fsSL https://raw.githubusercontent.com/zoo3323/claude-statusline/main/uninstall-claude-statusline.sh | bash
 ```
+
+설치가 건드린 것(위 표의 파일들, `settings.json`의 `statusLine`/Codex 훅, alias)만 정확히 되돌립니다. `settings.json`의 다른 설정(모델, 테마, 권한 등)은 전혀 건드리지 않습니다. 혹시 몰라 제거 전 `settings.json`도 자동으로 백업해둡니다.
 
 ## 업데이트
 
