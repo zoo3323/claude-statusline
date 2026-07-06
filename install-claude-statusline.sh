@@ -270,6 +270,36 @@ fi
 EMBEDDED_codex-usage-refresh.sh
 chmod +x "$SCRIPTS_DIR/codex-usage-refresh.sh"
 
+# cu-refresh alias (zsh/bash 둘 다, 있는 쪽에만)
+for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
+  if [ -f "$rc" ] && ! grep -q 'alias cu-refresh=' "$rc"; then
+    printf '\n# Codex 사용량 즉시 새로고침 (상태줄 캐시 강제 갱신)\nalias cu-refresh="$HOME/.claude/scripts/codex-usage-refresh.sh"\n' >> "$rc"
+  fi
+done
+
+# refresh Claude Code 스킬 (/refresh 로 어느 세션에서나 호출 가능)
+SKILLS_DIR="$CLAUDE_DIR/skills/refresh"
+mkdir -p "$SKILLS_DIR"
+cat > "$SKILLS_DIR/SKILL.md" <<'EMBEDDED_refresh-SKILL.md'
+---
+name: refresh
+description: Codex/Claude 사용량을 즉시 새로고침해서 보여준다. 사용자가 "/refresh", "사용량 새로고침", "codex 사용량 지금 보여줘" 등을 요청할 때 사용.
+---
+
+# refresh
+
+Codex 사용량 게이지는 기본적으로 5분에 한 번만 백그라운드로 자동 갱신된다. 사용자가 지금 당장 최신 값을 보고 싶어 할 때 이 스킬로 즉시 새로고침한다.
+
+## 절차
+
+1. `~/.claude/scripts/codex-usage-refresh.sh` 가 있는지 확인하고 Bash로 실행한다.
+   - 없으면: claude-statusline이 설치되지 않은 환경이라는 뜻이므로 그대로 사용자에게 알리고 끝낸다.
+2. `~/.codex/auth.json` 이 없어서 스크립트가 조용히 종료된 경우(캐시 파일 mtime이 갱신되지 않음): Codex에 로그인되어 있지 않다고 안내한다.
+3. `~/.claude/codex-status/codex-usage.json` 을 읽어 5시간 사용량(`rate_limit.primary_window.used_percent`), 주간 사용량(`rate_limit.secondary_window.used_percent`), 리셋 시각(`rate_limit.primary_window.reset_at`, Unix epoch)을 확인한다.
+4. Claude 자체 사용량(5시간/주간 rate limit)은 별도 새로고침이 필요 없다 — Claude Code가 상태줄을 그릴 때마다 항상 최신 값을 직접 넘겨주기 때문. 이 점을 참고해 "Claude는 이미 실시간"이라고 설명에 곁들인다.
+5. 새로고침된 수치를 한두 줄로 짧게 보고한다. 상태줄은 refreshInterval(2초) 안에 자동으로 반영된다고 알려준다.
+EMBEDDED_refresh-SKILL.md
+
 # settings.json 에 statusLine + codex 훅 병합 (기존 설정 보존, 백업 생성)
 SETTINGS="$CLAUDE_DIR/settings.json"
 [ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
@@ -285,4 +315,5 @@ jq '
 
 echo "✅ 설치 완료"
 echo "   - 상태줄: Claude Code를 새로 시작하면 하단에 표시됩니다"
+echo "   - 사용량 즉시 새로고침: 터미널에서 cu-refresh (새 셸부터 적용), Claude Code 안에서 /refresh"
 echo "   - 백업: $SETTINGS.bak.*"
