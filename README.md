@@ -14,6 +14,7 @@ Claude Code CLI 하단에 **Claude / Codex 사용량, 컨텍스트, Codex 실행
 - **Codex 실행 상태** — Codex MCP 호출을 훅으로 감지해 `◌ codex`(대기) / `◜ codex ×2 작업중`(스피너 회전, 병렬 개수 표시)
 - **컨텍스트 게이지** — 터미널 오른쪽 끝에 정렬
 - **진행 중 태스크** — Claude Code 태스크 목록의 in_progress 항목을 노란색으로 표시
+- **사용량 즉시 새로고침** — Codex 사용량은 기본 5분 캐시라, 터미널에서 `cu-refresh` 또는 Claude Code 안에서 `/refresh`로 바로 최신화 가능 (Claude 사용량은 항상 실시간이라 새로고침 불필요)
 - 토큰/API 사용 없음 — 전부 로컬 셸 스크립트
 
 ## 설치
@@ -43,6 +44,9 @@ bash install-claude-statusline.sh
 |---|---|
 | `~/.claude/scripts/statusline-codex.sh` | 상태줄 렌더링 |
 | `~/.claude/scripts/codex-status-set.sh` | Codex MCP 호출 감지 카운터 (훅) |
+| `~/.claude/scripts/codex-usage-refresh.sh` | Codex 계정 사용량 조회 (자동 5분 주기 + 수동 새로고침) |
+| `~/.claude/skills/refresh/SKILL.md` | Claude Code 안에서 `/refresh`로 즉시 새로고침 |
+| `cu-refresh` alias (`.zshrc`/`.bashrc`) | 터미널에서 즉시 새로고침 |
 | `~/.claude/settings.json` | `statusLine` + Codex 훅 3개 병합 (기존 설정 보존, `.bak` 백업 생성) |
 
 ## 제거
@@ -51,7 +55,9 @@ bash install-claude-statusline.sh
 # settings.json 백업 복원 (설치 시 만들어진 .bak 파일)
 cp ~/.claude/settings.json.bak.<날짜> ~/.claude/settings.json
 rm -rf ~/.claude/scripts/statusline-codex.sh ~/.claude/scripts/codex-status-set.sh \
+       ~/.claude/scripts/codex-usage-refresh.sh ~/.claude/skills/refresh \
        ~/.claude/codex-status
+# .zshrc / .bashrc 에서 cu-refresh alias 줄도 삭제
 ```
 
 ## 업데이트
