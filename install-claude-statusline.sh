@@ -1,6 +1,6 @@
 #!/bin/bash
-# Claude Code 상태줄 + Codex 훅 설치 스크립트.
-# 이 파일 하나만 다른 머신에 복사해서 실행하면 됨:
+# Installer for the Claude Code status line + Codex hooks.
+# Copy this single file to another machine and run it:
 #   curl -fsSL https://raw.githubusercontent.com/zoo3323/claude-statusline/main/install-claude-statusline.sh | bash
 set -e
 
@@ -9,9 +9,10 @@ SCRIPTS_DIR="$CLAUDE_DIR/scripts"
 LOCAL_BIN="$HOME/.local/bin"
 mkdir -p "$SCRIPTS_DIR" "$CLAUDE_DIR/codex-status"
 
-# jq가 없으면 관리자 권한 없이 자동으로 받아서 씀 (brew/apt 필요 없음)
+# jq is required. Fetch it into ~/.local/bin when it is missing, so no admin
+# rights and no package manager are needed.
 if ! command -v jq >/dev/null 2>&1; then
-  echo "ℹ️  jq가 없어서 자동으로 설치합니다 (관리자 권한 불필요)..."
+  echo "ℹ️  jq not found — installing it locally (no admin rights required)..."
   mkdir -p "$LOCAL_BIN"
   JQ_VER="jq-1.7.1"
   case "$(uname -s)" in
@@ -23,19 +24,20 @@ if ! command -v jq >/dev/null 2>&1; then
               aarch64|arm64) JQ_ASSET="jq-linux-arm64" ;;
               *)             JQ_ASSET="jq-linux-amd64" ;;
             esac ;;
-    *) echo "❌ 자동 설치를 지원하지 않는 OS입니다. jq를 직접 설치한 뒤 다시 실행하세요."; exit 1 ;;
+    *) echo "❌ No automatic install for this OS. Install jq yourself and run this again."; exit 1 ;;
   esac
   if ! curl -fsSL -o "$LOCAL_BIN/jq" "https://github.com/jqlang/jq/releases/download/${JQ_VER}/${JQ_ASSET}"; then
-    echo "❌ jq 자동 다운로드 실패. 수동 설치 후 다시 실행하세요: (mac) brew install jq / (ubuntu) sudo apt install -y jq"
+    echo "❌ Could not download jq. Install it manually and run this again: (mac) brew install jq / (ubuntu) sudo apt install -y jq"
     exit 1
   fi
   chmod +x "$LOCAL_BIN/jq"
   export PATH="$LOCAL_BIN:$PATH"
-  command -v jq >/dev/null 2>&1 || { echo "❌ jq 설치 후에도 인식되지 않습니다."; exit 1; }
-  echo "✅ jq를 $LOCAL_BIN/jq 에 설치했습니다"
+  command -v jq >/dev/null 2>&1 || { echo "❌ jq is installed but still not on PATH."; exit 1; }
+  echo "✅ Installed jq to $LOCAL_BIN/jq"
 fi
 
-# ~/.local/bin 이 PATH에 없는 셸 설정 파일에는 추가 (다음 셸부터 jq/cu-refresh 인식)
+# Put ~/.local/bin on PATH in shell rc files that lack it, so the next shell finds
+# jq and cu-refresh.
 for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
   if [ -f "$rc" ] && ! grep -q '\.local/bin' "$rc"; then
     printf '\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$rc"
@@ -44,33 +46,40 @@ done
 
 cat > "$SCRIPTS_DIR/statusline-codex.sh" <<'EMBEDDED_statusline-codex.sh'
 #!/bin/bash
-# Claude Code statusLine: folder | model (effort) | ctx gauge | 5h limit gauge | Codex status
+# Claude Code statusLine:
+#   folder | model (effort) | codex usage | claude usage | codex state | task ... context
 input=$(cat)
+STATE_DIR="$HOME/.claude/codex-status"
 
-# Claude 사용량 캐시 — 에이전트가 rate_limits(5h/주간 한도)를 읽을 수 있게 마지막 입력을 저장.
-# (codex-usage.json과 같은 패턴. 제거하려면 이 case 블록만 지우면 됨)
+# Keep the most recent payload that carried rate_limits, so other sessions (and
+# agents) can read the numbers Claude Code handed us last.
 case "$input" in
-  *'"rate_limits"'*) printf '%s' "$input" > "$HOME/.claude/codex-status/claude-last-input.json" ;;
+  *'"rate_limits"'*) printf '%s' "$input" > "$STATE_DIR/claude-last-input.json" ;;
 esac
 
 session_id=$(echo "$input" | jq -r '.session_id // empty')
 
-# 공통 색상 팔레트 — dim(\033[2m) 대신 뚜렷한 256색 회색으로 시인성 확보
+# Shared palette — explicit 256-colour greys instead of dim (\033[2m), which
+# some terminals render almost invisibly.
 RESET='\033[0m'
-GRAY='\033[38;5;245m'   # 구분자·부가정보(리셋시간 등)·유휴 상태
-RAIL='\033[38;5;245m'   # 게이지 양끝 레일
-EMPTY='\033[38;5;240m'  # 게이지 빈 칸(채움색과 대비되게 살짝 어둡게)
+GRAY='\033[38;5;245m'   # separators, secondary info (reset time), idle state
+RAIL='\033[38;5;245m'   # gauge end rails
+EMPTY='\033[38;5;240m'  # empty gauge cells (a touch darker than the fill)
+
+mtime_of() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }
+now_s=$(date +%s)
 
 dir_name=$(basename "$(echo "$input" | jq -r '.workspace.current_dir // .cwd // "."')")
 model=$(echo "$input" | jq -r '.model.display_name // "Claude"')
-# 모델명 끝의 " (…context)" 접미사 제거: "Opus 4.8 (1M context)" -> "Opus 4.8"
+# Drop the trailing " (… context)" suffix: "Opus 4.8 (1M context)" -> "Opus 4.8"
 model=$(printf '%s' "$model" | sed -E 's/ *\([^)]*context\)$//')
 
-# effort: 우선 JSON .effort.level, 없으면 환경변수 $CLAUDE_EFFORT
+# effort: from JSON .effort.level, else the $CLAUDE_EFFORT environment variable
 effort=$(echo "$input" | jq -r '.effort.level // empty')
 [ -z "$effort" ] && effort="$CLAUDE_EFFORT"
 
-# 모델 (effort) — 세그먼트=모델색: Fable 마젠타, Opus 파랑, Sonnet 시안, Haiku 초록
+# model (effort) — segment colour is the model: Fable magenta, Opus blue,
+# Sonnet cyan, Haiku green
 case "$(echo "$model" | tr '[:upper:]' '[:lower:]')" in
   *fable*)  mcolor='\033[38;5;213m' ;;
   *opus*)   mcolor='\033[38;5;75m'  ;;
@@ -84,10 +93,9 @@ else
   model_part=$(printf '%b%s%b' "$mcolor" "$model" "$RESET")
 fi
 
-# 컨텍스트 게이지바 (20칸) — 세그먼트=상태색(초록→노랑→빨강), 라벨도 상태색으로 통일
+# Context gauge (20 cells) — segment colour tracks the level (green → yellow →
+# red), and the label takes the same colour.
 ctx_pct=$(echo "$input" | jq -r '.context_window.used_percentage // empty')
-r5_pct=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty | if . == "" then . else floor end')
-r5_reset=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // empty')
 
 ctx_part=""
 if [ -n "$ctx_pct" ]; then
@@ -99,18 +107,18 @@ if [ -n "$ctx_pct" ]; then
   if [ "$ctx_pct" -ge 90 ] 2>/dev/null; then color='\033[38;5;196m'
   elif [ "$ctx_pct" -ge 70 ] 2>/dev/null; then color='\033[38;5;214m'
   else color='\033[38;5;41m'; fi
-  ctx_part=$(printf '%b컨텍스트%b %b▕%b\033[48;5;238m%b%s%b%s%b%b▏%b%s%%' \
+  ctx_part=$(printf '%bcontext%b %b▕%b\033[48;5;238m%b%s%b%s%b%b▏%b%s%%' \
     "$color" "$RESET" "$RAIL" "$RESET" "$color" "$fill_bar" "$EMPTY" "$empty_bar" "$RESET" "$RAIL" "$RESET" "$ctx_pct")
 fi
 
-# 사용량 게이지 빌더 — 남은 양이 100%에서 점점 줄어드는 방식.
-#  가로 길이 = 5시간 창 남은 비율, 블록 높이(▁▂▃▄▅▆▇█) = 주간 사용량
-usage_gauge() { # $1=사용%(5h) $2=주간사용% $3=테마색 → "게이지 남은%" 출력
+# Usage gauge — drains from 100% as the quota is spent.
+#  bar length = share of the 5-hour window left, block height (▁▂▃▄▅▆▇█) = weekly
+usage_gauge() { # $1=5h used% $2=weekly used% $3=theme colour -> "gauge remaining%"
   local used=$1 weekly=$2 theme=$3 w=20 rem rem7 cells hc idx fill="" empty="" i c
   rem=$((100 - used)); [ "$rem" -lt 0 ] && rem=0
   cells=$(( (rem * w + 50) / 100 )); [ "$cells" -gt "$w" ] && cells=$w
   [ "$cells" -eq 0 ] && [ "$rem" -gt 0 ] && cells=1
-  # 블록 높이 = 주간 "남은" 양 (주간을 쓸수록 낮아짐)
+  # Block height = weekly quota *left*, so it flattens as the week is spent.
   local chars=("▁" "▂" "▃" "▄" "▅" "▆" "▇" "█")
   hc="█"
   case "$weekly" in
@@ -123,15 +131,16 @@ usage_gauge() { # $1=사용%(5h) $2=주간사용% $3=테마색 → "게이지 �
   if [ "$used" -ge 90 ] 2>/dev/null; then c='\033[38;5;196m'
   elif [ "$used" -ge 70 ] 2>/dev/null; then c='\033[38;5;214m'
   else c=$theme; fi
-  # 트랙 전체에 어두운 배경을 깔고 양끝을 얇은 레일(▕ ▏)로 마감
+  # Dark background across the whole track, thin rails (▕ ▏) at both ends.
   printf '%b▕%b\033[48;5;238m%b%s%b%s%b%b▏%b%s%%' \
     "$RAIL" "$RESET" "$c" "$fill" "$EMPTY" "$empty" "$RESET" "$RAIL" "$RESET" "$rem"
 }
 
-reset_txt() { # $1=리셋 epoch → "↻6d3h" / "↻1h23m" / "↻45m" (지났거나 없으면 빈 문자열)
-  # 남은 시간이 길면(주간 창) 일 단위, 짧으면(5시간 창) 시/분 단위로 자동 전환.
-  # Codex가 2026-07-12부터 5시간 창을 임시로 없애 주간 창(약 7일)만 내려줄 때 날짜가 보이게 함.
-  # 5시간 창이 다시 돌아오면 자동으로 시/분 표시로 복귀.
+reset_txt() { # $1=reset epoch -> "↻6d3h" / "↻1h23m" / "↻45m" (empty if past/unset)
+  # Switches unit with the distance: days for a weekly window, hours/minutes for
+  # a 5-hour one. Codex dropped its 5-hour window on 2026-07-12 and sent only
+  # the weekly (~7 day) one, which is why days are shown at all; when a short
+  # window comes back the display returns to hours/minutes on its own.
   local at=$1 remain rm_d rm_h rm_m
   [ -z "$at" ] && return
   remain=$(( at - $(date +%s) )) 2>/dev/null || return
@@ -142,39 +151,100 @@ reset_txt() { # $1=리셋 epoch → "↻6d3h" / "↻1h23m" / "↻45m" (지났거
   else printf '%b↻%sm%b' "$GRAY" "$rm_m" "$RESET"; fi
 }
 
-# Claude 5시간 한도 (테마: Claude 코랄 #D97757, 높이 = 주간 사용량)
-r7_pct=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty | if . == "" then . else floor end')
-sess_part=""
-if [ -n "$r5_pct" ]; then
-  sess_part="$(printf '\033[38;2;217;119;87mclaude\033[0m ')$(usage_gauge "$r5_pct" "$r7_pct" '\033[38;2;217;119;87m')"
-  rt=$(reset_txt "$r5_reset")
-  [ -n "$rt" ] && sess_part="$sess_part $rt"
+# Pick the fresher of two readings of the same window. Usage only climbs until
+# the window resets, so a later resets_at means a newer window, and inside one
+# window the larger number is the more recent one.
+fresher() { # $1=usedA $2=resetA $3=usedB $4=resetB -> "used reset" (blank if neither)
+  local ua=$1 ra=$2 ub=$3 rb=$4
+  case "$ua" in ''|*[!0-9]*) ua="" ;; esac
+  case "$ub" in ''|*[!0-9]*) ub="" ;; esac
+  case "$ra" in ''|*[!0-9]*) ra=0 ;; esac
+  case "$rb" in ''|*[!0-9]*) rb=0 ;; esac
+  if [ -z "$ua" ]; then
+    [ -n "$ub" ] && printf '%s %s' "$ub" "$rb"
+    return
+  fi
+  if [ -z "$ub" ]; then printf '%s %s' "$ua" "$ra"; return; fi
+  if [ "$rb" -gt "$ra" ] || { [ "$rb" -eq "$ra" ] && [ "$ub" -gt "$ua" ]; }; then
+    printf '%s %s' "$ub" "$rb"
+  else
+    printf '%s %s' "$ua" "$ra"
+  fi
+}
+
+# Claude account usage (theme: Claude coral #D97757, height = weekly usage).
+#
+# Claude Code only refills the rate_limits block after an API response, so an
+# idle session would keep painting the numbers it last saw — and once a window
+# rolls over it would keep painting them for hours. So we read three sources and
+# draw the freshest: this payload, the last payload any session received, and a
+# background poll of the account usage endpoint (account info, not a model
+# request: it costs no usage).
+CL_CACHE="$STATE_DIR/claude-usage.json"
+CL_MARK="$STATE_DIR/claude-usage.last"
+cl_cache_m=0; [ -f "$CL_CACHE" ] && cl_cache_m=$(mtime_of "$CL_CACHE")
+cl_mark_m=0;  [ -f "$CL_MARK" ]  && cl_mark_m=$(mtime_of "$CL_MARK")
+# Refresh when the cache is over 5 minutes old. The mark file is touched on every
+# attempt and shared by all sessions, so failures back off at the same 5-minute
+# pace instead of hammering — that endpoint is itself rate limited and answers a
+# burst with 429 for a few minutes.
+if [ $((now_s - cl_cache_m)) -gt 300 ] && [ $((now_s - cl_mark_m)) -gt 300 ]; then
+  touch "$CL_MARK"
+  ( "$HOME/.claude/scripts/claude-usage-refresh.sh" >/dev/null 2>&1 & )
 fi
 
-# Codex 상태 (세션별 in-flight 카운터)
+# used% / resets_at for both windows, one tab-separated row per source. A missing
+# percentage is emitted as "-" rather than an empty field: tab counts as IFS
+# whitespace, so empty fields would collapse and shift every later column.
+PAYLOAD_TSV='def n: (. // "-") | (floor? // .);
+  [ (.rate_limits.five_hour.used_percentage | n), (.rate_limits.five_hour.resets_at // 0),
+    (.rate_limits.seven_day.used_percentage | n), (.rate_limits.seven_day.resets_at // 0) ] | @tsv'
+IFS=$'\t' read -r l5 l5r l7 l7r <<< "$(echo "$input" | jq -r "$PAYLOAD_TSV" 2>/dev/null)"
+IFS=$'\t' read -r p5 p5r p7 p7r <<< "$(jq -r "$PAYLOAD_TSV" "$STATE_DIR/claude-last-input.json" 2>/dev/null)"
+IFS=$'\t' read -r a5 a5r a7 a7r <<< "$(jq -r 'def n: (. // "-") | (floor? // .);
+  [ (.five_hour.used_percentage | n), (.five_hour.resets_at // 0),
+    (.seven_day.used_percentage | n), (.seven_day.resets_at // 0) ] | @tsv' "$CL_CACHE" 2>/dev/null)"
+
+read -r c5 c5r <<< "$(fresher "$l5" "$l5r" "$p5" "$p5r")"
+read -r c5 c5r <<< "$(fresher "$c5" "$c5r" "$a5" "$a5r")"
+read -r c7 c7r <<< "$(fresher "$l7" "$l7r" "$p7" "$p7r")"
+read -r c7 c7r <<< "$(fresher "$c7" "$c7r" "$a7" "$a7r")"
+
+# A window whose reset time has passed has already rolled over: the numbers we
+# hold describe the window before it, so the current one starts empty.
+if [ -n "$c5" ] && [ "${c5r:-0}" -gt 0 ] && [ "$c5r" -le "$now_s" ]; then c5=0; c5r=0; fi
+if [ -n "$c7" ] && [ "${c7r:-0}" -gt 0 ] && [ "$c7r" -le "$now_s" ]; then c7=0; c7r=0; fi
+
+claude_part=""
+if [ -n "$c5" ]; then
+  claude_part="$(printf '\033[38;2;217;119;87mclaude\033[0m ')$(usage_gauge "$c5" "$c7" '\033[38;2;217;119;87m')"
+  rt=$(reset_txt "$c5r")
+  [ -n "$rt" ] && claude_part="$claude_part $rt"
+fi
+
+# Codex state (per-session in-flight counter)
 count=0
 if [ -n "$session_id" ]; then
-  count_file="$HOME/.claude/codex-status/${session_id}.count"
+  count_file="$STATE_DIR/${session_id}.count"
   [ -f "$count_file" ] && count=$(cat "$count_file" 2>/dev/null || echo 0)
 fi
 case "$count" in ''|*[!0-9]*) count=0 ;; esac
 
-# Codex 계정 사용량 — 5분마다 백그라운드로 API 조회(모델 요청 아님, 사용량 소모 없음).
-# 캐시와 codex 세션 로그 중 더 최신 데이터를 사용한다.
-# (테마: OpenAI 그린 #10A37F, 가로 = 5h 남은 양, 높이 = 주간 사용량, ↻ = 리셋까지 남은 시간)
-mtime_of() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }
-CU_CACHE="$HOME/.claude/codex-status/codex-usage.json"
-CU_MARK="$HOME/.claude/codex-status/codex-usage.last"
-now_s=$(date +%s)
+# Codex account usage — polled in the background every 5 minutes (account info,
+# not a model request: it costs no usage). Whichever of the cache and the codex
+# session log is newer wins.
+# (theme: OpenAI green #10A37F, bar = 5h left, height = weekly, ↻ = time to reset)
+CU_CACHE="$STATE_DIR/codex-usage.json"
+CU_MARK="$STATE_DIR/codex-usage.last"
 cache_m=0; [ -f "$CU_CACHE" ] && cache_m=$(mtime_of "$CU_CACHE")
-mark_m=0; [ -f "$CU_MARK" ] && mark_m=$(mtime_of "$CU_MARK")
-# 캐시가 5분 넘게 오래됐으면 백그라운드 새로고침 (실패 반복 방지: 시도 간격 60초)
+mark_m=0;  [ -f "$CU_MARK" ]  && mark_m=$(mtime_of "$CU_MARK")
 if [ $((now_s - cache_m)) -gt 300 ] && [ $((now_s - mark_m)) -gt 60 ] && [ -f "$HOME/.codex/auth.json" ]; then
   touch "$CU_MARK"
   ( "$HOME/.claude/scripts/codex-usage-refresh.sh" >/dev/null 2>&1 & )
 fi
 
-# 세션 로그의 최신 rate_limits (codex 실행 직후엔 이쪽이 더 최신일 수 있음)
+# Latest rate_limits in the session log (fresher than the cache right after a
+# codex call)
 cu_line=""; sess_m=0
 for cf in $(ls -t "$HOME/.codex/sessions"/*/*/*/rollout-*.jsonl 2>/dev/null | head -3); do
   cu_line=$(grep '"rate_limits"' "$cf" 2>/dev/null | tail -1)
@@ -192,7 +262,7 @@ elif [ -n "$cu_line" ]; then
   cu_reset=$(echo "$cu_line" | jq -r '.payload.rate_limits.primary.resets_at // empty' 2>/dev/null)
 fi
 
-# Codex 사용량 게이지 세그먼트 (claude 게이지와 같은 형식, 라벨은 OpenAI 그린)
+# Codex usage segment (same shape as the claude gauge, label in OpenAI green)
 cu_part=""
 if [ -n "$cu_pct" ]; then
   cu_part="$(printf '\033[38;2;16;163;127mcodex\033[0m ')$(usage_gauge "$cu_pct" "$cu7_pct" '\033[38;2;16;163;127m')"
@@ -200,19 +270,19 @@ if [ -n "$cu_pct" ]; then
   [ -n "$crt" ] && cu_part="$cu_part $crt"
 fi
 
-# Codex 실행 상태 표시 (맨 오른쪽에 배치) — 상태=강조색
+# Codex run state — accent colour while busy
 if [ "$count" -ge 1 ]; then
-  # 갱신 주기(2초)마다 프레임이 돌아가는 스피너
+  # Spinner advancing once per refresh (2s)
   frames=("◜" "◝" "◞" "◟")
   frame=${frames[$(( $(date +%s) / 2 % 4 ))]}
   label="codex"
   [ "$count" -gt 1 ] && label="codex ×${count}"
-  codex_part=$(printf '\033[1;38;5;42m%s %s\033[0m \033[38;5;42m작업중\033[0m' "$frame" "$label")
+  codex_part=$(printf '\033[1;38;5;42m%s %s\033[0m \033[38;5;42mworking\033[0m' "$frame" "$label")
 else
   codex_part=$(printf '%b◌ codex%b' "$GRAY" "$RESET")
 fi
 
-# 진행 중 태스크 (in_progress 첫 번째, 30자 초과 시 말줄임) — 상태/태스크=강조색
+# Task in progress (first in_progress one, ellipsised past 30 chars)
 task_part=""
 tasks_dir="$HOME/.claude/tasks/$session_id"
 if [ -d "$tasks_dir" ]; then
@@ -223,20 +293,22 @@ if [ -d "$tasks_dir" ]; then
   fi
 fi
 
-# 조립 — 한 줄: [폴더 · 모델 · codex게이지 · claude게이지 · codex상태 · 태스크] ...여백... [컨텍스트]
+# Assemble one line:
+#   [folder · model · codex gauge · claude gauge · codex state · task] …gap… [context]
 sep=$(printf ' %b·%b ' "$GRAY" "$RESET")
 left="$(printf '\033[1m%s\033[0m' "$dir_name")${sep}${model_part}"
 [ -n "$cu_part" ] && left="${left}${sep}${cu_part}"
-[ -n "$sess_part" ] && left="${left}${sep}${sess_part}"
+[ -n "$claude_part" ] && left="${left}${sep}${claude_part}"
 left="${left}${sep}${codex_part}"
 [ -n "$task_part" ] && left="${left}${sep}${task_part}"
 
 if [ -n "$ctx_part" ]; then
-  # 터미널 폭을 알 수 있으면 ctx를 오른쪽 끝에 정렬, 모르면 그냥 이어붙임
+  # Right-align the context gauge when the terminal width is known, otherwise
+  # just append it.
   cols=${COLUMNS:-$( (stty size </dev/tty) 2>/dev/null | awk '{print $2}')}
   [ -z "$cols" ] && cols=$(tput cols 2>/dev/null)
   strip_ansi() { printf '%s' "$1" | sed $'s/\x1b\\[[0-9;]*m//g'; }
-  disp_width() { # 표시 폭: 글자 수 + 한글/CJK(2칸 문자) 개수 보정
+  disp_width() { # columns used: character count plus one per wide (CJK) glyph
     local plain chars wide
     plain=$(strip_ansi "$1")
     chars=$(printf '%s' "$plain" | wc -m)
@@ -299,9 +371,10 @@ chmod +x "$SCRIPTS_DIR/codex-status-set.sh"
 
 cat > "$SCRIPTS_DIR/codex-usage-refresh.sh" <<'EMBEDDED_codex-usage-refresh.sh'
 #!/bin/bash
-# Codex 계정 사용량을 백엔드 API에서 조회해 캐시에 저장.
-# 모델 요청이 아니라 계정 정보 조회라 사용량을 소모하지 않는다.
-# statusline-codex.sh 가 5분에 한 번 백그라운드로 호출한다.
+# Reads Codex account usage from the backend API and caches it for the status
+# line. This is an account-info request, not a model request: it consumes no
+# usage. statusline-codex.sh calls it in the background at most once every
+# 5 minutes.
 export PATH="$HOME/.local/bin:$PATH"
 
 AUTH="$HOME/.codex/auth.json"
@@ -318,44 +391,161 @@ out=$(curl -s --max-time 8 \
   -H "chatgpt-account-id: $ACC" \
   "https://chatgpt.com/backend-api/wham/usage")
 
-# 유효한 응답일 때만 캐시 갱신 (원자적 쓰기)
+# Replace the cache only on a valid response (atomic write)
 if printf '%s' "$out" | jq -e '.rate_limit.primary_window.used_percent' >/dev/null 2>&1; then
   printf '%s' "$out" > "$CACHE.tmp" && mv "$CACHE.tmp" "$CACHE"
 fi
 EMBEDDED_codex-usage-refresh.sh
 chmod +x "$SCRIPTS_DIR/codex-usage-refresh.sh"
 
-# cu-refresh alias (zsh/bash 둘 다, 있는 쪽에만)
+cat > "$SCRIPTS_DIR/claude-usage-refresh.sh" <<'EMBEDDED_claude-usage-refresh.sh'
+#!/bin/bash
+# Reads Claude account usage (5-hour + weekly rate limits) and caches it for the
+# status line. This is an account-info request, not a model request: it consumes
+# no usage.
+#
+# Why it exists: Claude Code only refreshes the rate_limits block it hands to the
+# status line after an API response. Without this poll the claude gauge freezes
+# whenever you stop prompting, and keeps showing a spent window long after that
+# window has reset. statusline-codex.sh calls this in the background at most once
+# every 5 minutes.
+export PATH="$HOME/.local/bin:$PATH"
+
+CACHE="$HOME/.claude/codex-status/claude-usage.json"
+CREDS="$HOME/.claude/.credentials.json"
+
+# A cache written seconds ago is as good as a new call, and this endpoint answers
+# bursts with 429 for a few minutes — so a manual cu-refresh landing right after a
+# background poll would spend that budget for nothing.
+if [ -f "$CACHE" ]; then
+  cache_m=$(stat -c %Y "$CACHE" 2>/dev/null || stat -f %m "$CACHE" 2>/dev/null || echo 0)
+  [ $(( $(date +%s) - cache_m )) -lt 60 ] && exit 0
+fi
+
+# OAuth token — the credentials file first, the macOS Keychain only if that file
+# is missing or already stale. An expired token is skipped rather than traded for
+# a 401: Claude Code rotates it on its own schedule and the next run picks the new
+# one up.
+read_token() { # stdin: credentials JSON -> "<token> <expiry_ms>"
+  jq -r '.claudeAiOauth | select(.accessToken != null)
+         | "\(.accessToken) \(.expiresAt // 0)"' 2>/dev/null
+}
+
+now_ms=$(( $(date +%s) * 1000 ))
+usable() { # "<token> <expiry_ms>" -> success when present and good for 30s more
+  [ -n "$1" ] || return 1
+  local exp=${1##* }
+  case "$exp" in ''|*[!0-9]*) exp=0 ;; esac
+  [ "$exp" -eq 0 ] || [ "$exp" -gt $((now_ms + 30000)) ]
+}
+
+cand=""
+[ -f "$CREDS" ] && cand=$(read_token < "$CREDS")
+if ! usable "$cand"; then
+  cand=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null | read_token)
+fi
+usable "$cand" || exit 0
+TOKEN=${cand%% *}
+
+mkdir -p "$(dirname "$CACHE")"
+out=$(curl -s --max-time 8 \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "anthropic-beta: oauth-2025-04-20" \
+  "https://api.anthropic.com/api/oauth/usage")
+
+# Only touch the cache on a response that actually carries a window. Errors
+# (including this endpoint's own rate limit) leave the previous cache in place.
+printf '%s' "$out" | jq -e '(.five_hour.utilization // .seven_day.utilization) != null' >/dev/null 2>&1 || exit 0
+
+# Normalise to the shape the status line reads: integer percentages and Unix
+# epoch resets, matching what Claude Code puts in .rate_limits.
+printf '%s' "$out" | jq '
+  def epoch:                       # ISO-8601 (optional fraction/offset) -> epoch seconds
+    if . == null then 0
+    else (sub("\\.[0-9]+"; "")) as $s
+      | ($s | capture("(?<off>Z|[+-][0-9]{2}:[0-9]{2})$") // {off: "Z"}) as $c
+      | (($s | sub("(Z|[+-][0-9]{2}:[0-9]{2})$"; "")) + "Z" | fromdateiso8601) as $base
+      | if $c.off == "Z" then $base
+        else $base - ((($c.off[1:3] | tonumber) * 3600 + ($c.off[4:6] | tonumber) * 60)
+                      * (if ($c.off[0:1]) == "+" then 1 else -1 end))
+        end
+    end;
+  def window: if .utilization == null then null
+              else {used_percentage: (.utilization | floor), resets_at: (.resets_at | epoch)} end;
+  {fetched_at: (now | floor), five_hour: (.five_hour | window), seven_day: (.seven_day | window)}
+' > "$CACHE.tmp" 2>/dev/null && mv "$CACHE.tmp" "$CACHE" || rm -f "$CACHE.tmp"
+EMBEDDED_claude-usage-refresh.sh
+chmod +x "$SCRIPTS_DIR/claude-usage-refresh.sh"
+
+cat > "$SCRIPTS_DIR/usage-refresh.sh" <<'EMBEDDED_usage-refresh.sh'
+#!/bin/bash
+# Refreshes both usage caches right now, bypassing the status line's 5-minute
+# schedule. Bound to the `cu-refresh` shell alias and used by the /refresh skill.
+# Each half is independent: one failing (not logged in, endpoint rate limited)
+# leaves the other's cache updated and the previous values in place.
+DIR="$HOME/.claude/scripts"
+[ -x "$DIR/codex-usage-refresh.sh" ] && "$DIR/codex-usage-refresh.sh"
+[ -x "$DIR/claude-usage-refresh.sh" ] && "$DIR/claude-usage-refresh.sh"
+exit 0
+EMBEDDED_usage-refresh.sh
+chmod +x "$SCRIPTS_DIR/usage-refresh.sh"
+
+
+# cu-refresh alias, in whichever of the two rc files exists. Any previous alias is
+# rewritten, so an install from before the Claude poller (when cu-refresh pointed
+# straight at the Codex-only script) is upgraded rather than left behind.
 for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
-  if [ -f "$rc" ] && ! grep -q 'alias cu-refresh=' "$rc"; then
-    printf '\n# Codex 사용량 즉시 새로고침 (상태줄 캐시 강제 갱신)\nalias cu-refresh="$HOME/.claude/scripts/codex-usage-refresh.sh"\n' >> "$rc"
+  [ -f "$rc" ] || continue
+  if grep -q 'alias cu-refresh=' "$rc"; then
+    # The second pattern is the old localized comment line shipped by earlier versions.
+    sed -i.bak '/alias cu-refresh=/d; /# Refresh both usage gauges now/d; /# Codex 사용량 즉시 새로고침/d' "$rc"
+    rm -f "$rc.bak"
   fi
+  printf '\n# Refresh both usage gauges now (forces the status line caches)\nalias cu-refresh="$HOME/.claude/scripts/usage-refresh.sh"\n' >> "$rc"
 done
 
-# refresh Claude Code 스킬 (/refresh 로 어느 세션에서나 호출 가능)
+# refresh skill, so /refresh works from any session
 SKILLS_DIR="$CLAUDE_DIR/skills/refresh"
 mkdir -p "$SKILLS_DIR"
 cat > "$SKILLS_DIR/SKILL.md" <<'EMBEDDED_refresh-SKILL.md'
 ---
 name: refresh
-description: Codex/Claude 사용량을 즉시 새로고침해서 보여준다. 사용자가 "/refresh", "사용량 새로고침", "codex 사용량 지금 보여줘" 등을 요청할 때 사용.
+description: Refresh the Codex and Claude usage gauges right now and report the numbers. Use when the user asks for "/refresh", "refresh usage", or "show me my usage now".
 ---
 
 # refresh
 
-Codex 사용량 게이지는 기본적으로 5분에 한 번만 백그라운드로 자동 갱신된다. 사용자가 지금 당장 최신 값을 보고 싶어 할 때 이 스킬로 즉시 새로고침한다.
+Both usage gauges refresh in the background at most once every 5 minutes, so the
+status line can be up to 5 minutes behind. Use this skill when the user wants the
+current numbers immediately.
 
-## 절차
+## Steps
 
-1. `~/.claude/scripts/codex-usage-refresh.sh` 가 있는지 확인하고 Bash로 실행한다.
-   - 없으면: claude-statusline이 설치되지 않은 환경이라는 뜻이므로 그대로 사용자에게 알리고 끝낸다.
-2. `~/.codex/auth.json` 이 없어서 스크립트가 조용히 종료된 경우(캐시 파일 mtime이 갱신되지 않음): Codex에 로그인되어 있지 않다고 안내한다.
-3. `~/.claude/codex-status/codex-usage.json` 을 읽어 5시간 사용량(`rate_limit.primary_window.used_percent`), 주간 사용량(`rate_limit.secondary_window.used_percent`), 리셋 시각(`rate_limit.primary_window.reset_at`, Unix epoch)을 확인한다.
-4. Claude 자체 사용량(5시간/주간 rate limit)은 별도 새로고침이 필요 없다 — Claude Code가 상태줄을 그릴 때마다 항상 최신 값을 직접 넘겨주기 때문. 이 점을 참고해 "Claude는 이미 실시간"이라고 설명에 곁들인다.
-5. 새로고침된 수치를 한두 줄로 짧게 보고한다. 상태줄은 refreshInterval(2초) 안에 자동으로 반영된다고 알려준다.
+1. Note the mtime of the two cache files, then run `~/.claude/scripts/usage-refresh.sh`
+   with Bash. It refreshes both caches and prints nothing.
+   - If that script does not exist, claude-statusline is not installed here. Say so and stop.
+2. Read the caches:
+   - Codex — `~/.claude/codex-status/codex-usage.json`: `rate_limit.primary_window.used_percent`
+     (5-hour), `rate_limit.secondary_window.used_percent` (weekly),
+     `rate_limit.primary_window.reset_at` (Unix epoch).
+   - Claude — `~/.claude/codex-status/claude-usage.json`: `five_hour.used_percentage`,
+     `seven_day.used_percentage`, `five_hour.resets_at` (Unix epoch), `fetched_at`.
+3. A cache whose mtime did not change means one of two things — tell them apart by
+   how old the file is:
+   - Under a minute old: the poll was skipped on purpose, because the numbers were
+     already current. Nothing is wrong.
+   - Older than that: this half failed and its numbers are older than they look.
+     Usual causes are Codex not being logged in (`~/.codex/auth.json` missing), the
+     Claude usage endpoint rate-limiting the call (it answers bursts with 429 for a
+     few minutes), or an OAuth token that expired before Claude Code rotated it.
+     Report a stale half as stale rather than presenting old numbers as current.
+4. Report the numbers in a line or two. The status line picks them up within its
+   refresh interval (2s).
 EMBEDDED_refresh-SKILL.md
 
-# settings.json 에 statusLine + codex 훅 병합 (기존 설정 보존, 백업 생성)
+
+# Merge statusLine + the Codex hooks into settings.json (existing settings are
+# preserved; a timestamped backup is written first).
 SETTINGS="$CLAUDE_DIR/settings.json"
 [ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
 cp "$SETTINGS" "$SETTINGS.bak.$(date +%Y%m%d%H%M%S)"
@@ -368,7 +558,7 @@ jq '
   | .hooks.PostToolUseFailure = ((.hooks.PostToolUseFailure // []) | map(select(.matcher != "mcp__codex__codex|mcp__codex__codex-reply")) + [{matcher: "mcp__codex__codex|mcp__codex__codex-reply", hooks: [{type: "command", command: "~/.claude/scripts/codex-status-set.sh dec 2>/dev/null || true"}]}])
 ' "$SETTINGS" > "$SETTINGS.tmp" && mv "$SETTINGS.tmp" "$SETTINGS"
 
-echo "✅ 설치 완료"
-echo "   - 상태줄: Claude Code를 새로 시작하면 하단에 표시됩니다"
-echo "   - 사용량 즉시 새로고침: 터미널에서 cu-refresh (새 셸부터 적용), Claude Code 안에서 /refresh"
-echo "   - 백업: $SETTINGS.bak.*"
+echo "✅ Installed"
+echo "   - Status line: restart Claude Code and it appears at the bottom"
+echo "   - Refresh usage now: cu-refresh in a terminal (new shells), /refresh inside Claude Code"
+echo "   - Backup: $SETTINGS.bak.*"

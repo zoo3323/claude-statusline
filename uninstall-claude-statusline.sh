@@ -1,5 +1,5 @@
 #!/bin/bash
-# claude-statusline 제거 스크립트. 설치가 건드린 것만 정확히 되돌린다.
+# Uninstaller for claude-statusline. Reverts exactly what the installer touched.
 #   curl -fsSL https://raw.githubusercontent.com/zoo3323/claude-statusline/main/uninstall-claude-statusline.sh | bash
 set -e
 
@@ -14,20 +14,23 @@ if [ -f "$SETTINGS" ] && command -v jq >/dev/null 2>&1; then
     | .hooks.PostToolUse = ((.hooks.PostToolUse // []) | map(select(.matcher != "mcp__codex__codex|mcp__codex__codex-reply")))
     | .hooks.PostToolUseFailure = ((.hooks.PostToolUseFailure // []) | map(select(.matcher != "mcp__codex__codex|mcp__codex__codex-reply")))
   ' "$SETTINGS" > "$SETTINGS.tmp" && mv "$SETTINGS.tmp" "$SETTINGS"
-  echo "✅ settings.json에서 상태줄/Codex 훅만 제거했습니다 (다른 설정은 그대로, 백업: $SETTINGS.bak.uninstall.*)"
+  echo "✅ Removed only the status line and the Codex hooks from settings.json (other settings untouched, backup: $SETTINGS.bak.uninstall.*)"
 fi
 
 rm -rf "$CLAUDE_DIR/scripts/statusline-codex.sh" \
        "$CLAUDE_DIR/scripts/codex-status-set.sh" \
        "$CLAUDE_DIR/scripts/codex-usage-refresh.sh" \
+       "$CLAUDE_DIR/scripts/claude-usage-refresh.sh" \
+       "$CLAUDE_DIR/scripts/usage-refresh.sh" \
        "$CLAUDE_DIR/skills/refresh" \
        "$CLAUDE_DIR/codex-status"
 
 for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
   if [ -f "$rc" ]; then
-    sed -i.bak '/alias cu-refresh=/d; /# Codex 사용량 즉시 새로고침/d' "$rc"
+    # The last pattern is the localized comment line shipped by earlier versions.
+    sed -i.bak '/alias cu-refresh=/d; /# Refresh both usage gauges now/d; /# Codex 사용량 즉시 새로고침/d' "$rc"
     rm -f "$rc.bak"
   fi
 done
 
-echo "✅ claude-statusline 제거 완료. Claude Code를 재시작하면 상태줄이 사라집니다."
+echo "✅ claude-statusline removed. Restart Claude Code and the status line is gone."
