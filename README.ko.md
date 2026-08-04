@@ -15,7 +15,8 @@ curl -fsSL https://raw.githubusercontent.com/zoo3323/claude-statusline/main/inst
 
 설치 후 Claude Code를 재시작하면 상태줄이 나타납니다. `jq`가 없으면 관리자 권한
 없이 `~/.local/bin`에 받아옵니다. 설치되는 건 `~/.claude/scripts/`의 스크립트,
-`/refresh` 스킬, `~/.claude/codex-status/` 캐시입니다.
+`/refresh` 스킬, `~/.claude/codex-status/` 캐시, `~/.local/bin/cu-refresh`
+링크입니다.
 
 ## 사용량 게이지 읽는 법
 
@@ -42,3 +43,9 @@ curl -fsSL https://raw.githubusercontent.com/zoo3323/claude-statusline/main/unin
 ```
 
 설치가 건드린 것만 정확히 되돌리고, 다른 설정은 그대로 둡니다.
+
+## 개발
+
+스크립트 원본은 `src/`에 있습니다. `install-claude-statusline.sh`는 `./build.sh`가
+거기서 생성하므로, installer가 아니라 `src/`를 고쳐야 합니다. `./build.sh --check`는
+커밋된 installer가 최신이 아니면 실패합니다.

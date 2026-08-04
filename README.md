@@ -15,8 +15,8 @@ curl -fsSL https://raw.githubusercontent.com/zoo3323/claude-statusline/main/inst
 
 Restart Claude Code and the status line appears. `jq` is fetched into
 `~/.local/bin` if it is missing, no admin rights required. Everything lands in
-`~/.claude/scripts/`, a `/refresh` skill, and caches under
-`~/.claude/codex-status/`.
+`~/.claude/scripts/`, a `/refresh` skill, caches under
+`~/.claude/codex-status/`, and a `cu-refresh` link in `~/.local/bin`.
 
 ## Reading a usage gauge
 
@@ -45,3 +45,9 @@ curl -fsSL https://raw.githubusercontent.com/zoo3323/claude-statusline/main/unin
 ```
 
 Reverts exactly what the installer touched and leaves everything else alone.
+
+## Development
+
+The scripts live in `src/`. `install-claude-statusline.sh` is generated from them
+by `./build.sh` — edit `src/`, not the installer. `./build.sh --check` fails when
+the committed installer is out of date.
