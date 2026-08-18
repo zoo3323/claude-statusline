@@ -100,7 +100,22 @@ case "$input" in
   *'"rate_limits"'*) printf '%s' "$input" > "$STATE_DIR/claude-last-input.json" ;;
 esac
 
-session_id=$(echo "$input" | jq -r '.session_id // empty')
+# One jq pass pulls every payload field the render needs, tab-separated.
+# A missing value is emitted as "-" rather than an empty field: tab counts as
+# IFS whitespace, so empty fields would collapse and shift every later column.
+IFS=$'\t' read -r session_id cur_dir model effort ctx_pct l5 l5r l7 l7r <<< "$(echo "$input" | jq -r '
+  def n: (. // "-") | (floor? // .);
+  [ (.session_id // "-"),
+    (.workspace.current_dir // .cwd // "-"),
+    (.model.display_name // "Claude"),
+    (.effort.level // "-"),
+    (.context_window.used_percentage | n),
+    (.rate_limits.five_hour.used_percentage | n), (.rate_limits.five_hour.resets_at // 0),
+    (.rate_limits.seven_day.used_percentage | n), (.rate_limits.seven_day.resets_at // 0) ] | @tsv' 2>/dev/null)"
+[ "$session_id" = "-" ] && session_id=""
+[ "$cur_dir" = "-" ] && cur_dir="."
+[ "$effort" = "-" ] && effort=""
+[ "$ctx_pct" = "-" ] && ctx_pct=""
 
 # Shared palette — explicit 256-colour greys instead of dim (\033[2m), which
 # some terminals render almost invisibly.
@@ -112,13 +127,11 @@ EMPTY='\033[38;5;240m'  # empty gauge cells (a touch darker than the fill)
 mtime_of() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }
 now_s=$(date +%s)
 
-dir_name=$(basename "$(echo "$input" | jq -r '.workspace.current_dir // .cwd // "."')")
-model=$(echo "$input" | jq -r '.model.display_name // "Claude"')
+dir_name=$(basename "$cur_dir")
 # Drop the trailing " (… context)" suffix: "Opus 4.8 (1M context)" -> "Opus 4.8"
 model=$(printf '%s' "$model" | sed -E 's/ *\([^)]*context\)$//')
 
 # effort: from JSON .effort.level, else the $CLAUDE_EFFORT environment variable
-effort=$(echo "$input" | jq -r '.effort.level // empty')
 [ -z "$effort" ] && effort="$CLAUDE_EFFORT"
 
 # model (effort) — segment colour is the model: Fable magenta, Opus blue,
@@ -137,8 +150,6 @@ else
 fi
 
 # Context — percentage only, colour tracks the level (green → yellow → red).
-ctx_pct=$(echo "$input" | jq -r '.context_window.used_percentage // empty')
-
 ctx_part=""
 if [ -n "$ctx_pct" ]; then
   if [ "$ctx_pct" -ge 90 ] 2>/dev/null; then color='\033[38;5;196m'
@@ -232,13 +243,12 @@ if [ $((now_s - u_mark_m)) -gt 300 ]; then
   ( "$HOME/.claude/scripts/usage-refresh.sh" 300 >/dev/null 2>&1 & )
 fi
 
-# used% / resets_at for both windows, one tab-separated row per source. A missing
-# percentage is emitted as "-" rather than an empty field: tab counts as IFS
-# whitespace, so empty fields would collapse and shift every later column.
+# used% / resets_at for both windows from the other two sources (this payload's
+# own numbers, l5…, came from the single jq pass at the top). Same "-" trick
+# for missing fields.
 PAYLOAD_TSV='def n: (. // "-") | (floor? // .);
   [ (.rate_limits.five_hour.used_percentage | n), (.rate_limits.five_hour.resets_at // 0),
     (.rate_limits.seven_day.used_percentage | n), (.rate_limits.seven_day.resets_at // 0) ] | @tsv'
-IFS=$'\t' read -r l5 l5r l7 l7r <<< "$(echo "$input" | jq -r "$PAYLOAD_TSV" 2>/dev/null)"
 IFS=$'\t' read -r p5 p5r p7 p7r <<< "$(jq -r "$PAYLOAD_TSV" "$STATE_DIR/claude-last-input.json" 2>/dev/null)"
 IFS=$'\t' read -r a5 a5r a7 a7r <<< "$(jq -r 'def n: (. // "-") | (floor? // .);
   [ (.five_hour.used_percentage | n), (.five_hour.resets_at // 0),
@@ -293,15 +303,18 @@ fi
 case "$sess_m" in ''|*[!0-9]*) sess_m=0 ;; esac
 
 cu_pct=""; cu7_pct=""; cu_reset=""
+CODEX_TSV='def n: (. // "-") | (floor? // .);
+  [ (.primary.used_percent | n), (.secondary.used_percent | n), (.primary.resets_at // .primary.reset_at // "-") ] | @tsv'
 if [ -f "$CU_CACHE" ] && [ "$cache_m" -ge "$sess_m" ]; then
-  cu_pct=$(jq -r '.rate_limit.primary_window.used_percent // empty | floor' "$CU_CACHE" 2>/dev/null)
-  cu7_pct=$(jq -r '.rate_limit.secondary_window.used_percent // empty | floor' "$CU_CACHE" 2>/dev/null)
-  cu_reset=$(jq -r '.rate_limit.primary_window.reset_at // empty' "$CU_CACHE" 2>/dev/null)
+  IFS=$'\t' read -r cu_pct cu7_pct cu_reset <<< "$(jq -r "
+    .rate_limit | {primary: .primary_window, secondary: .secondary_window} | $CODEX_TSV" "$CU_CACHE" 2>/dev/null)"
 elif [ -n "$cu_line" ]; then
-  cu_pct=$(echo "$cu_line" | jq -r '.payload.rate_limits.primary.used_percent // empty | floor' 2>/dev/null)
-  cu7_pct=$(echo "$cu_line" | jq -r '.payload.rate_limits.secondary.used_percent // empty | floor' 2>/dev/null)
-  cu_reset=$(echo "$cu_line" | jq -r '.payload.rate_limits.primary.resets_at // empty' 2>/dev/null)
+  IFS=$'\t' read -r cu_pct cu7_pct cu_reset <<< "$(echo "$cu_line" | jq -r "
+    .payload.rate_limits | $CODEX_TSV" 2>/dev/null)"
 fi
+[ "$cu_pct" = "-" ] && cu_pct=""
+[ "$cu7_pct" = "-" ] && cu7_pct=""
+[ "$cu_reset" = "-" ] && cu_reset=""
 
 # Codex usage segment (same shape as the claude gauge, label in OpenAI green)
 cu_part=""
