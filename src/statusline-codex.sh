@@ -127,16 +127,19 @@ fresher() { # $1=usedA $2=resetA $3=usedB $4=resetB -> "used reset" (blank if ne
 # background poll of the account usage endpoint (account info, not a model
 # request: it costs no usage).
 CL_CACHE="$STATE_DIR/claude-usage.json"
-CL_MARK="$STATE_DIR/claude-usage.last"
-cl_cache_m=0; [ -f "$CL_CACHE" ] && cl_cache_m=$(mtime_of "$CL_CACHE")
-cl_mark_m=0;  [ -f "$CL_MARK" ]  && cl_mark_m=$(mtime_of "$CL_MARK")
-# Refresh when the cache is over 5 minutes old. The mark file is touched on every
-# attempt and shared by all sessions, so failures back off at the same 5-minute
-# pace instead of hammering — that endpoint is itself rate limited and answers a
-# burst with 429 for a few minutes.
-if [ $((now_s - cl_cache_m)) -gt 300 ] && [ $((now_s - cl_mark_m)) -gt 300 ]; then
-  touch "$CL_MARK"
-  ( "$HOME/.claude/scripts/claude-usage-refresh.sh" >/dev/null 2>&1 & )
+
+# One trigger for both usage polls: at most every 5 minutes, kick the shared
+# wrapper in the background. The mark file is touched on every attempt and
+# shared by all sessions, so failures back off at the same pace instead of
+# hammering — the Claude endpoint answers a burst with 429 for a few minutes.
+# The wrapper gets the same 300s as a freshness bound: each refresh script
+# skips its network call when a live source (payload, session log, cache) is
+# younger than that, so while you are actively working nothing is fetched.
+U_MARK="$STATE_DIR/usage.last"
+u_mark_m=0; [ -f "$U_MARK" ] && u_mark_m=$(mtime_of "$U_MARK")
+if [ $((now_s - u_mark_m)) -gt 300 ]; then
+  touch "$U_MARK"
+  ( "$HOME/.claude/scripts/usage-refresh.sh" 300 >/dev/null 2>&1 & )
 fi
 
 # used% / resets_at for both windows, one tab-separated row per source. A missing
@@ -168,18 +171,11 @@ if [ -n "$c5" ]; then
   [ -n "$rt" ] && claude_part="$claude_part $rt"
 fi
 
-# Codex account usage — polled in the background every 5 minutes (account info,
-# not a model request: it costs no usage). Whichever of the cache and the codex
-# session log is newer wins.
+# Codex account usage — refreshed by the shared trigger above. Whichever of the
+# cache and the codex session log is newer wins.
 # (theme: OpenAI green #10A37F, bar = 5h left, height = weekly, ↻ = time to reset)
 CU_CACHE="$STATE_DIR/codex-usage.json"
-CU_MARK="$STATE_DIR/codex-usage.last"
 cache_m=0; [ -f "$CU_CACHE" ] && cache_m=$(mtime_of "$CU_CACHE")
-mark_m=0;  [ -f "$CU_MARK" ]  && mark_m=$(mtime_of "$CU_MARK")
-if [ $((now_s - cache_m)) -gt 300 ] && [ $((now_s - mark_m)) -gt 60 ] && [ -f "$HOME/.codex/auth.json" ]; then
-  touch "$CU_MARK"
-  ( "$HOME/.claude/scripts/codex-usage-refresh.sh" >/dev/null 2>&1 & )
-fi
 
 # Latest rate_limits in the session log (fresher than the cache right after a
 # codex call)

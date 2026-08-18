@@ -7,19 +7,32 @@
 # status line after an API response. Without this poll the claude gauge freezes
 # whenever you stop prompting, and keeps showing a spent window long after that
 # window has reset. statusline-codex.sh calls this in the background at most once
-# every 5 minutes.
+# every 5 minutes (via usage-refresh.sh).
+#
+# $1 (optional): freshness bound in seconds — skip the network call when any
+# source of the same numbers is younger than this. Defaults to 60, which only
+# guards against bursts (this endpoint answers a burst with 429 for a few
+# minutes, so a manual cu-refresh landing right after a background poll would
+# spend that budget for nothing). The status line passes 300: while you are
+# actively prompting, every API response drops a fresh payload, so polling
+# would fetch numbers that lose to it anyway.
 export PATH="$HOME/.local/bin:$PATH"
 
-CACHE="$HOME/.claude/codex-status/claude-usage.json"
+STATE_DIR="$HOME/.claude/codex-status"
+CACHE="$STATE_DIR/claude-usage.json"
 CREDS="$HOME/.claude/.credentials.json"
 
-# A cache written seconds ago is as good as a new call, and this endpoint answers
-# bursts with 429 for a few minutes — so a manual cu-refresh landing right after a
-# background poll would spend that budget for nothing.
-if [ -f "$CACHE" ]; then
-  cache_m=$(stat -c %Y "$CACHE" 2>/dev/null || stat -f %m "$CACHE" 2>/dev/null || echo 0)
-  [ $(( $(date +%s) - cache_m )) -lt 60 ] && exit 0
-fi
+MAX_AGE=$1
+case "$MAX_AGE" in ''|*[!0-9]*) MAX_AGE=60 ;; esac
+now_s=$(date +%s)
+fresh() { # $1=file -> success when it is younger than MAX_AGE
+  local m
+  [ -f "$1" ] || return 1
+  m=$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0)
+  [ $(( now_s - m )) -lt "$MAX_AGE" ]
+}
+fresh "$CACHE" && exit 0
+fresh "$STATE_DIR/claude-last-input.json" && exit 0
 
 # OAuth token — the credentials file first, the macOS Keychain only if that file
 # is missing or already stale. An expired token is skipped rather than traded for

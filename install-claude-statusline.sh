@@ -217,16 +217,19 @@ fresher() { # $1=usedA $2=resetA $3=usedB $4=resetB -> "used reset" (blank if ne
 # background poll of the account usage endpoint (account info, not a model
 # request: it costs no usage).
 CL_CACHE="$STATE_DIR/claude-usage.json"
-CL_MARK="$STATE_DIR/claude-usage.last"
-cl_cache_m=0; [ -f "$CL_CACHE" ] && cl_cache_m=$(mtime_of "$CL_CACHE")
-cl_mark_m=0;  [ -f "$CL_MARK" ]  && cl_mark_m=$(mtime_of "$CL_MARK")
-# Refresh when the cache is over 5 minutes old. The mark file is touched on every
-# attempt and shared by all sessions, so failures back off at the same 5-minute
-# pace instead of hammering — that endpoint is itself rate limited and answers a
-# burst with 429 for a few minutes.
-if [ $((now_s - cl_cache_m)) -gt 300 ] && [ $((now_s - cl_mark_m)) -gt 300 ]; then
-  touch "$CL_MARK"
-  ( "$HOME/.claude/scripts/claude-usage-refresh.sh" >/dev/null 2>&1 & )
+
+# One trigger for both usage polls: at most every 5 minutes, kick the shared
+# wrapper in the background. The mark file is touched on every attempt and
+# shared by all sessions, so failures back off at the same pace instead of
+# hammering — the Claude endpoint answers a burst with 429 for a few minutes.
+# The wrapper gets the same 300s as a freshness bound: each refresh script
+# skips its network call when a live source (payload, session log, cache) is
+# younger than that, so while you are actively working nothing is fetched.
+U_MARK="$STATE_DIR/usage.last"
+u_mark_m=0; [ -f "$U_MARK" ] && u_mark_m=$(mtime_of "$U_MARK")
+if [ $((now_s - u_mark_m)) -gt 300 ]; then
+  touch "$U_MARK"
+  ( "$HOME/.claude/scripts/usage-refresh.sh" 300 >/dev/null 2>&1 & )
 fi
 
 # used% / resets_at for both windows, one tab-separated row per source. A missing
@@ -258,18 +261,11 @@ if [ -n "$c5" ]; then
   [ -n "$rt" ] && claude_part="$claude_part $rt"
 fi
 
-# Codex account usage — polled in the background every 5 minutes (account info,
-# not a model request: it costs no usage). Whichever of the cache and the codex
-# session log is newer wins.
+# Codex account usage — refreshed by the shared trigger above. Whichever of the
+# cache and the codex session log is newer wins.
 # (theme: OpenAI green #10A37F, bar = 5h left, height = weekly, ↻ = time to reset)
 CU_CACHE="$STATE_DIR/codex-usage.json"
-CU_MARK="$STATE_DIR/codex-usage.last"
 cache_m=0; [ -f "$CU_CACHE" ] && cache_m=$(mtime_of "$CU_CACHE")
-mark_m=0;  [ -f "$CU_MARK" ]  && mark_m=$(mtime_of "$CU_MARK")
-if [ $((now_s - cache_m)) -gt 300 ] && [ $((now_s - mark_m)) -gt 60 ] && [ -f "$HOME/.codex/auth.json" ]; then
-  touch "$CU_MARK"
-  ( "$HOME/.claude/scripts/codex-usage-refresh.sh" >/dev/null 2>&1 & )
-fi
 
 # Latest rate_limits in the session log (fresher than the cache right after a
 # codex call)
@@ -362,12 +358,35 @@ cat > "$SCRIPTS_DIR/codex-usage-refresh.sh" <<'EMBEDDED_codex-usage-refresh.sh'
 # Reads Codex account usage from the backend API and caches it for the status
 # line. This is an account-info request, not a model request: it consumes no
 # usage. statusline-codex.sh calls it in the background at most once every
-# 5 minutes.
+# 5 minutes (via usage-refresh.sh).
+#
+# $1 (optional): freshness bound in seconds — skip the network call when any
+# source of the same numbers is younger than this. Defaults to 60 (burst
+# guard for manual cu-refresh runs). The status line passes 300: while codex
+# is being called, every call drops fresh rate_limits into the session log,
+# so polling would fetch numbers the log already beats.
 export PATH="$HOME/.local/bin:$PATH"
 
 AUTH="$HOME/.codex/auth.json"
 CACHE="$HOME/.claude/codex-status/codex-usage.json"
 [ -f "$AUTH" ] || exit 0
+
+MAX_AGE=$1
+case "$MAX_AGE" in ''|*[!0-9]*) MAX_AGE=60 ;; esac
+now_s=$(date +%s)
+fresh() { # $1=file -> success when it is younger than MAX_AGE
+  local m
+  [ -f "$1" ] || return 1
+  m=$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0)
+  [ $(( now_s - m )) -lt "$MAX_AGE" ]
+}
+fresh "$CACHE" && exit 0
+for cf in $(ls -t "$HOME/.codex/sessions"/*/*/*/rollout-*.jsonl 2>/dev/null | head -3); do
+  if grep -q '"rate_limits"' "$cf" 2>/dev/null; then
+    fresh "$cf" && exit 0
+    break
+  fi
+done
 
 TOKEN=$(jq -r '.tokens.access_token // empty' "$AUTH" 2>/dev/null)
 ACC=$(jq -r '.tokens.account_id // empty' "$AUTH" 2>/dev/null)
@@ -396,19 +415,32 @@ cat > "$SCRIPTS_DIR/claude-usage-refresh.sh" <<'EMBEDDED_claude-usage-refresh.sh
 # status line after an API response. Without this poll the claude gauge freezes
 # whenever you stop prompting, and keeps showing a spent window long after that
 # window has reset. statusline-codex.sh calls this in the background at most once
-# every 5 minutes.
+# every 5 minutes (via usage-refresh.sh).
+#
+# $1 (optional): freshness bound in seconds — skip the network call when any
+# source of the same numbers is younger than this. Defaults to 60, which only
+# guards against bursts (this endpoint answers a burst with 429 for a few
+# minutes, so a manual cu-refresh landing right after a background poll would
+# spend that budget for nothing). The status line passes 300: while you are
+# actively prompting, every API response drops a fresh payload, so polling
+# would fetch numbers that lose to it anyway.
 export PATH="$HOME/.local/bin:$PATH"
 
-CACHE="$HOME/.claude/codex-status/claude-usage.json"
+STATE_DIR="$HOME/.claude/codex-status"
+CACHE="$STATE_DIR/claude-usage.json"
 CREDS="$HOME/.claude/.credentials.json"
 
-# A cache written seconds ago is as good as a new call, and this endpoint answers
-# bursts with 429 for a few minutes — so a manual cu-refresh landing right after a
-# background poll would spend that budget for nothing.
-if [ -f "$CACHE" ]; then
-  cache_m=$(stat -c %Y "$CACHE" 2>/dev/null || stat -f %m "$CACHE" 2>/dev/null || echo 0)
-  [ $(( $(date +%s) - cache_m )) -lt 60 ] && exit 0
-fi
+MAX_AGE=$1
+case "$MAX_AGE" in ''|*[!0-9]*) MAX_AGE=60 ;; esac
+now_s=$(date +%s)
+fresh() { # $1=file -> success when it is younger than MAX_AGE
+  local m
+  [ -f "$1" ] || return 1
+  m=$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0)
+  [ $(( now_s - m )) -lt "$MAX_AGE" ]
+}
+fresh "$CACHE" && exit 0
+fresh "$STATE_DIR/claude-last-input.json" && exit 0
 
 # OAuth token — the credentials file first, the macOS Keychain only if that file
 # is missing or already stale. An expired token is skipped rather than traded for
@@ -467,13 +499,19 @@ chmod +x "$SCRIPTS_DIR/claude-usage-refresh.sh"
 
 cat > "$SCRIPTS_DIR/usage-refresh.sh" <<'EMBEDDED_usage-refresh.sh'
 #!/bin/bash
-# Refreshes both usage caches right now, bypassing the status line's 5-minute
-# schedule. Bound to the `cu-refresh` shell alias and used by the /refresh skill.
+# Refreshes both usage caches. Bound to the `cu-refresh` shell alias, used by
+# the /refresh skill, and called by the status line's shared 5-minute trigger.
+#
+# $1 (optional): freshness bound in seconds, passed through to both scripts —
+# each one skips its network call when it already has a source younger than
+# this. Manual runs omit it (the scripts default to a short burst guard), the
+# status line passes 300 so nothing is fetched while you are actively working.
+#
 # Each half is independent: one failing (not logged in, endpoint rate limited)
 # leaves the other's cache updated and the previous values in place.
 DIR="$HOME/.claude/scripts"
-[ -x "$DIR/codex-usage-refresh.sh" ] && "$DIR/codex-usage-refresh.sh"
-[ -x "$DIR/claude-usage-refresh.sh" ] && "$DIR/claude-usage-refresh.sh"
+[ -x "$DIR/codex-usage-refresh.sh" ] && "$DIR/codex-usage-refresh.sh" "$@"
+[ -x "$DIR/claude-usage-refresh.sh" ] && "$DIR/claude-usage-refresh.sh" "$@"
 exit 0
 EMBEDDED_usage-refresh.sh
 chmod +x "$SCRIPTS_DIR/usage-refresh.sh"
