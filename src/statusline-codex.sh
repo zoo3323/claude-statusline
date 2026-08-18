@@ -178,12 +178,29 @@ CU_CACHE="$STATE_DIR/codex-usage.json"
 cache_m=0; [ -f "$CU_CACHE" ] && cache_m=$(mtime_of "$CU_CACHE")
 
 # Latest rate_limits in the session log (fresher than the cache right after a
-# codex call)
+# codex call). Grepping half-megabyte logs every 2-second render adds up, so
+# the result is cached keyed on the newest log file and its mtime: as long as
+# nothing new was written anywhere (the newest-by-mtime file is unchanged),
+# the previous answer still stands.
+SESS_CACHE="$STATE_DIR/codex-sess.cache"
 cu_line=""; sess_m=0
-for cf in $(ls -t "$HOME/.codex/sessions"/*/*/*/rollout-*.jsonl 2>/dev/null | head -3); do
-  cu_line=$(grep '"rate_limits"' "$cf" 2>/dev/null | tail -1)
-  [ -n "$cu_line" ] && { sess_m=$(mtime_of "$cf"); break; }
-done
+sess_files=$(ls -t "$HOME/.codex/sessions"/*/*/*/rollout-*.jsonl 2>/dev/null | head -3)
+newest=$(printf '%s\n' "$sess_files" | head -1)
+if [ -n "$newest" ]; then
+  sess_key="$newest $(mtime_of "$newest")"
+  if [ -f "$SESS_CACHE" ] && [ "$(sed -n 1p "$SESS_CACHE" 2>/dev/null)" = "$sess_key" ]; then
+    sess_m=$(sed -n 2p "$SESS_CACHE" 2>/dev/null)
+    cu_line=$(sed -n 3p "$SESS_CACHE" 2>/dev/null)
+  else
+    for cf in $sess_files; do
+      cu_line=$(grep '"rate_limits"' "$cf" 2>/dev/null | tail -1)
+      [ -n "$cu_line" ] && { sess_m=$(mtime_of "$cf"); break; }
+    done
+    printf '%s\n%s\n%s\n' "$sess_key" "$sess_m" "$cu_line" > "$SESS_CACHE.tmp" \
+      && mv "$SESS_CACHE.tmp" "$SESS_CACHE"
+  fi
+fi
+case "$sess_m" in ''|*[!0-9]*) sess_m=0 ;; esac
 
 cu_pct=""; cu7_pct=""; cu_reset=""
 if [ -f "$CU_CACHE" ] && [ "$cache_m" -ge "$sess_m" ]; then

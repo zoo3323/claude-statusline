@@ -1,5 +1,5 @@
 #!/bin/bash
-# Installer for the Claude Code status line + Codex hooks.
+# Installer for the Claude Code status line.
 #   curl -fsSL https://raw.githubusercontent.com/zoo3323/claude-statusline/main/install-claude-statusline.sh | bash
 #
 # GENERATED FILE — do not edit. The scripts it writes live in src/; change them
@@ -10,7 +10,7 @@
 # leaving a truncated script behind.
 set -e
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 
 CLAUDE_DIR="$HOME/.claude"
 SCRIPTS_DIR="$CLAUDE_DIR/scripts"
@@ -268,12 +268,29 @@ CU_CACHE="$STATE_DIR/codex-usage.json"
 cache_m=0; [ -f "$CU_CACHE" ] && cache_m=$(mtime_of "$CU_CACHE")
 
 # Latest rate_limits in the session log (fresher than the cache right after a
-# codex call)
+# codex call). Grepping half-megabyte logs every 2-second render adds up, so
+# the result is cached keyed on the newest log file and its mtime: as long as
+# nothing new was written anywhere (the newest-by-mtime file is unchanged),
+# the previous answer still stands.
+SESS_CACHE="$STATE_DIR/codex-sess.cache"
 cu_line=""; sess_m=0
-for cf in $(ls -t "$HOME/.codex/sessions"/*/*/*/rollout-*.jsonl 2>/dev/null | head -3); do
-  cu_line=$(grep '"rate_limits"' "$cf" 2>/dev/null | tail -1)
-  [ -n "$cu_line" ] && { sess_m=$(mtime_of "$cf"); break; }
-done
+sess_files=$(ls -t "$HOME/.codex/sessions"/*/*/*/rollout-*.jsonl 2>/dev/null | head -3)
+newest=$(printf '%s\n' "$sess_files" | head -1)
+if [ -n "$newest" ]; then
+  sess_key="$newest $(mtime_of "$newest")"
+  if [ -f "$SESS_CACHE" ] && [ "$(sed -n 1p "$SESS_CACHE" 2>/dev/null)" = "$sess_key" ]; then
+    sess_m=$(sed -n 2p "$SESS_CACHE" 2>/dev/null)
+    cu_line=$(sed -n 3p "$SESS_CACHE" 2>/dev/null)
+  else
+    for cf in $sess_files; do
+      cu_line=$(grep '"rate_limits"' "$cf" 2>/dev/null | tail -1)
+      [ -n "$cu_line" ] && { sess_m=$(mtime_of "$cf"); break; }
+    done
+    printf '%s\n%s\n%s\n' "$sess_key" "$sess_m" "$cu_line" > "$SESS_CACHE.tmp" \
+      && mv "$SESS_CACHE.tmp" "$SESS_CACHE"
+  fi
+fi
+case "$sess_m" in ''|*[!0-9]*) sess_m=0 ;; esac
 
 cu_pct=""; cu7_pct=""; cu_reset=""
 if [ -f "$CU_CACHE" ] && [ "$cache_m" -ge "$sess_m" ]; then
@@ -317,41 +334,6 @@ left="$(printf '\033[1m%s\033[0m' "$dir_name")${sep}${model_part}"
 printf '%s' "$left"
 EMBEDDED_statusline-codex.sh
 chmod +x "$SCRIPTS_DIR/statusline-codex.sh"
-
-cat > "$SCRIPTS_DIR/codex-status-set.sh" <<'EMBEDDED_codex-status-set.sh'
-#!/bin/bash
-# Tracks how many Codex MCP calls are in-flight for the current session (supports parallel calls).
-# Usage: codex-status-set.sh <inc|dec>   (hook JSON piped on stdin)
-op="$1"
-input=$(cat)
-session_id=$(echo "$input" | jq -r '.session_id // empty')
-[ -z "$session_id" ] && exit 0
-
-mkdir -p "$HOME/.claude/codex-status"
-count_file="$HOME/.claude/codex-status/${session_id}.count"
-lock_dir="$HOME/.claude/codex-status/${session_id}.lock"
-
-acquired=0
-for _ in $(seq 1 50); do
-  if mkdir "$lock_dir" 2>/dev/null; then
-    acquired=1
-    break
-  fi
-  sleep 0.05
-done
-
-current=$(cat "$count_file" 2>/dev/null || echo 0)
-case "$op" in
-  inc) new=$((current + 1)) ;;
-  dec) new=$((current - 1)); [ "$new" -lt 0 ] && new=0 ;;
-  *) new=$current ;;
-esac
-echo "$new" > "$count_file"
-
-[ "$acquired" = "1" ] && rmdir "$lock_dir" 2>/dev/null
-exit 0
-EMBEDDED_codex-status-set.sh
-chmod +x "$SCRIPTS_DIR/codex-status-set.sh"
 
 cat > "$SCRIPTS_DIR/codex-usage-refresh.sh" <<'EMBEDDED_codex-usage-refresh.sh'
 #!/bin/bash
@@ -581,19 +563,28 @@ prune_settings_backups() {
   return 0
 }
 
-# Merge statusLine + the Codex hooks into settings.json (existing settings are
-# preserved; a timestamped backup is written first).
+# Merge the statusLine into settings.json (existing settings are preserved; a
+# timestamped backup is written first). Versions before 1.1.0 also registered
+# Codex in-flight hooks for a run-state segment the status line no longer
+# draws — strip those on upgrade, the hook script is gone.
 merge_settings() {
   [ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
   cp "$SETTINGS" "$SETTINGS.bak.$(date +%Y%m%d%H%M%S)"
   prune_settings_backups
   jq '
     .statusLine = {type: "command", command: "~/.claude/scripts/statusline-codex.sh", refreshInterval: 2}
-    | .hooks = (.hooks // {})
-    | .hooks.PreToolUse = ((.hooks.PreToolUse // []) | map(select(.matcher != "mcp__codex__codex|mcp__codex__codex-reply")) + [{matcher: "mcp__codex__codex|mcp__codex__codex-reply", hooks: [{type: "command", command: "~/.claude/scripts/codex-status-set.sh inc 2>/dev/null || true"}]}])
-    | .hooks.PostToolUse = ((.hooks.PostToolUse // []) | map(select(.matcher != "mcp__codex__codex|mcp__codex__codex-reply")) + [{matcher: "mcp__codex__codex|mcp__codex__codex-reply", hooks: [{type: "command", command: "~/.claude/scripts/codex-status-set.sh dec 2>/dev/null || true"}]}])
-    | .hooks.PostToolUseFailure = ((.hooks.PostToolUseFailure // []) | map(select(.matcher != "mcp__codex__codex|mcp__codex__codex-reply")) + [{matcher: "mcp__codex__codex|mcp__codex__codex-reply", hooks: [{type: "command", command: "~/.claude/scripts/codex-status-set.sh dec 2>/dev/null || true"}]}])
+    | (if .hooks then
+         .hooks |= with_entries(.value |= map(select(.matcher != "mcp__codex__codex|mcp__codex__codex-reply")))
+       else . end)
   ' "$SETTINGS" > "$SETTINGS.tmp" && mv "$SETTINGS.tmp" "$SETTINGS"
+}
+
+# Leftovers from versions before 1.1.0: the hook script and its per-session
+# counter/lock files.
+remove_legacy_files() {
+  rm -f "$SCRIPTS_DIR/codex-status-set.sh" "$STATE_DIR"/*.count \
+        "$STATE_DIR"/claude-usage.last "$STATE_DIR"/codex-usage.last
+  rm -rf "$STATE_DIR"/*.lock
 }
 
 main() {
@@ -603,6 +594,7 @@ main() {
   write_files
   link_cu_refresh
   merge_settings
+  remove_legacy_files
   printf '%s\n' "$VERSION" > "$STATE_DIR/installed-version"
 
   echo "✅ Installed claude-statusline $VERSION"

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Installer for the Claude Code status line + Codex hooks.
+# Installer for the Claude Code status line.
 #   curl -fsSL https://raw.githubusercontent.com/zoo3323/claude-statusline/main/install-claude-statusline.sh | bash
 #
 # GENERATED FILE — do not edit. The scripts it writes live in src/; change them
@@ -90,9 +90,6 @@ write_files() {
 @@EMBED "$SCRIPTS_DIR/statusline-codex.sh" src/statusline-codex.sh
 chmod +x "$SCRIPTS_DIR/statusline-codex.sh"
 
-@@EMBED "$SCRIPTS_DIR/codex-status-set.sh" src/codex-status-set.sh
-chmod +x "$SCRIPTS_DIR/codex-status-set.sh"
-
 @@EMBED "$SCRIPTS_DIR/codex-usage-refresh.sh" src/codex-usage-refresh.sh
 chmod +x "$SCRIPTS_DIR/codex-usage-refresh.sh"
 
@@ -133,19 +130,28 @@ prune_settings_backups() {
   return 0
 }
 
-# Merge statusLine + the Codex hooks into settings.json (existing settings are
-# preserved; a timestamped backup is written first).
+# Merge the statusLine into settings.json (existing settings are preserved; a
+# timestamped backup is written first). Versions before 1.1.0 also registered
+# Codex in-flight hooks for a run-state segment the status line no longer
+# draws — strip those on upgrade, the hook script is gone.
 merge_settings() {
   [ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
   cp "$SETTINGS" "$SETTINGS.bak.$(date +%Y%m%d%H%M%S)"
   prune_settings_backups
   jq '
     .statusLine = {type: "command", command: "~/.claude/scripts/statusline-codex.sh", refreshInterval: 2}
-    | .hooks = (.hooks // {})
-    | .hooks.PreToolUse = ((.hooks.PreToolUse // []) | map(select(.matcher != "mcp__codex__codex|mcp__codex__codex-reply")) + [{matcher: "mcp__codex__codex|mcp__codex__codex-reply", hooks: [{type: "command", command: "~/.claude/scripts/codex-status-set.sh inc 2>/dev/null || true"}]}])
-    | .hooks.PostToolUse = ((.hooks.PostToolUse // []) | map(select(.matcher != "mcp__codex__codex|mcp__codex__codex-reply")) + [{matcher: "mcp__codex__codex|mcp__codex__codex-reply", hooks: [{type: "command", command: "~/.claude/scripts/codex-status-set.sh dec 2>/dev/null || true"}]}])
-    | .hooks.PostToolUseFailure = ((.hooks.PostToolUseFailure // []) | map(select(.matcher != "mcp__codex__codex|mcp__codex__codex-reply")) + [{matcher: "mcp__codex__codex|mcp__codex__codex-reply", hooks: [{type: "command", command: "~/.claude/scripts/codex-status-set.sh dec 2>/dev/null || true"}]}])
+    | (if .hooks then
+         .hooks |= with_entries(.value |= map(select(.matcher != "mcp__codex__codex|mcp__codex__codex-reply")))
+       else . end)
   ' "$SETTINGS" > "$SETTINGS.tmp" && mv "$SETTINGS.tmp" "$SETTINGS"
+}
+
+# Leftovers from versions before 1.1.0: the hook script and its per-session
+# counter/lock files.
+remove_legacy_files() {
+  rm -f "$SCRIPTS_DIR/codex-status-set.sh" "$STATE_DIR"/*.count \
+        "$STATE_DIR"/claude-usage.last "$STATE_DIR"/codex-usage.last
+  rm -rf "$STATE_DIR"/*.lock
 }
 
 main() {
@@ -155,6 +161,7 @@ main() {
   write_files
   link_cu_refresh
   merge_settings
+  remove_legacy_files
   printf '%s\n' "$VERSION" > "$STATE_DIR/installed-version"
 
   echo "✅ Installed claude-statusline $VERSION"
