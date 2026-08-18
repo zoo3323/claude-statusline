@@ -1,6 +1,6 @@
 #!/bin/bash
 # Claude Code statusLine:
-#   folder | model (effort) | codex usage | claude usage | codex state | task ... context
+#   folder | model (effort) | codex usage | claude usage | context% | task
 input=$(cat)
 STATE_DIR="$HOME/.claude/codex-status"
 
@@ -46,28 +46,21 @@ else
   model_part=$(printf '%b%s%b' "$mcolor" "$model" "$RESET")
 fi
 
-# Context gauge (20 cells) — segment colour tracks the level (green → yellow →
-# red), and the label takes the same colour.
+# Context — percentage only, colour tracks the level (green → yellow → red).
 ctx_pct=$(echo "$input" | jq -r '.context_window.used_percentage // empty')
 
 ctx_part=""
 if [ -n "$ctx_pct" ]; then
-  width=20
-  filled=$(( (ctx_pct * width + 50) / 100 )); [ "$filled" -gt "$width" ] && filled=$width
-  fill_bar=""; empty_bar=""
-  for ((i=0; i<filled; i++)); do fill_bar="${fill_bar}█"; done
-  for ((i=filled; i<width; i++)); do empty_bar="${empty_bar}░"; done
   if [ "$ctx_pct" -ge 90 ] 2>/dev/null; then color='\033[38;5;196m'
   elif [ "$ctx_pct" -ge 70 ] 2>/dev/null; then color='\033[38;5;214m'
   else color='\033[38;5;41m'; fi
-  ctx_part=$(printf '%bcontext%b %b▕%b\033[48;5;238m%b%s%b%s%b%b▏%b%s%%' \
-    "$color" "$RESET" "$RAIL" "$RESET" "$color" "$fill_bar" "$EMPTY" "$empty_bar" "$RESET" "$RAIL" "$RESET" "$ctx_pct")
+  ctx_part=$(printf '%bctx %s%%%b' "$color" "$ctx_pct" "$RESET")
 fi
 
 # Usage gauge — drains from 100% as the quota is spent.
 #  bar length = share of the 5-hour window left, block height (▁▂▃▄▅▆▇█) = weekly
 usage_gauge() { # $1=5h used% $2=weekly used% $3=theme colour -> "gauge remaining%"
-  local used=$1 weekly=$2 theme=$3 w=20 rem rem7 cells hc idx fill="" empty="" i c
+  local used=$1 weekly=$2 theme=$3 w=10 rem rem7 cells hc idx fill="" empty="" i c
   rem=$((100 - used)); [ "$rem" -lt 0 ] && rem=0
   cells=$(( (rem * w + 50) / 100 )); [ "$cells" -gt "$w" ] && cells=$w
   [ "$cells" -eq 0 ] && [ "$rem" -gt 0 ] && cells=1
@@ -175,14 +168,6 @@ if [ -n "$c5" ]; then
   [ -n "$rt" ] && claude_part="$claude_part $rt"
 fi
 
-# Codex state (per-session in-flight counter)
-count=0
-if [ -n "$session_id" ]; then
-  count_file="$STATE_DIR/${session_id}.count"
-  [ -f "$count_file" ] && count=$(cat "$count_file" 2>/dev/null || echo 0)
-fi
-case "$count" in ''|*[!0-9]*) count=0 ;; esac
-
 # Codex account usage — polled in the background every 5 minutes (account info,
 # not a model request: it costs no usage). Whichever of the cache and the codex
 # session log is newer wins.
@@ -223,18 +208,6 @@ if [ -n "$cu_pct" ]; then
   [ -n "$crt" ] && cu_part="$cu_part $crt"
 fi
 
-# Codex run state — accent colour while busy
-if [ "$count" -ge 1 ]; then
-  # Spinner advancing once per refresh (2s)
-  frames=("◜" "◝" "◞" "◟")
-  frame=${frames[$(( $(date +%s) / 2 % 4 ))]}
-  label="codex"
-  [ "$count" -gt 1 ] && label="codex ×${count}"
-  codex_part=$(printf '\033[1;38;5;42m%s %s\033[0m \033[38;5;42mworking\033[0m' "$frame" "$label")
-else
-  codex_part=$(printf '%b◌ codex%b' "$GRAY" "$RESET")
-fi
-
 # Task in progress (first in_progress one, ellipsised past 30 chars)
 task_part=""
 tasks_dir="$HOME/.claude/tasks/$session_id"
@@ -247,40 +220,12 @@ if [ -d "$tasks_dir" ]; then
 fi
 
 # Assemble one line:
-#   [folder · model · codex gauge · claude gauge · codex state · task] …gap… [context]
+#   [folder · model · codex gauge · claude gauge · context% · task]
 sep=$(printf ' %b·%b ' "$GRAY" "$RESET")
 left="$(printf '\033[1m%s\033[0m' "$dir_name")${sep}${model_part}"
 [ -n "$cu_part" ] && left="${left}${sep}${cu_part}"
 [ -n "$claude_part" ] && left="${left}${sep}${claude_part}"
-left="${left}${sep}${codex_part}"
+[ -n "$ctx_part" ] && left="${left}${sep}${ctx_part}"
 [ -n "$task_part" ] && left="${left}${sep}${task_part}"
 
-if [ -n "$ctx_part" ]; then
-  # Right-align the context gauge when the terminal width is known, otherwise
-  # just append it.
-  cols=${COLUMNS:-$( (stty size </dev/tty) 2>/dev/null | awk '{print $2}')}
-  [ -z "$cols" ] && cols=$(tput cols 2>/dev/null)
-  strip_ansi() { printf '%s' "$1" | sed $'s/\x1b\\[[0-9;]*m//g'; }
-  disp_width() { # columns used: character count plus one per wide (CJK) glyph
-    local plain chars wide
-    plain=$(strip_ansi "$1")
-    chars=$(printf '%s' "$plain" | wc -m)
-    wide=$(printf '%s' "$plain" | perl -CS -ne '$n += () = /[\x{1100}-\x{11FF}\x{3130}-\x{318F}\x{AC00}-\x{D7A3}\x{4E00}-\x{9FFF}\x{3040}-\x{30FF}]/g; END { print $n + 0 }' 2>/dev/null)
-    case "$wide" in ''|*[!0-9]*) wide=0 ;; esac
-    echo $((chars + wide))
-  }
-  if [ -n "$cols" ] 2>/dev/null && [ "$cols" -gt 0 ] 2>/dev/null; then
-    lw=$(disp_width "$left")
-    rw=$(disp_width "$ctx_part")
-    pad=$((cols - lw - rw - 1))
-    if [ "$pad" -gt 0 ]; then
-      printf '%s%*s%s' "$left" "$pad" "" "$ctx_part"
-    else
-      printf '%s%s%s' "$left" "$sep" "$ctx_part"
-    fi
-  else
-    printf '%s%s%s' "$left" "$sep" "$ctx_part"
-  fi
-else
-  printf '%s' "$left"
-fi
+printf '%s' "$left"

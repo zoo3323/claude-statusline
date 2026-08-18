@@ -2,7 +2,7 @@
 
 [English](README.md) · **한국어**
 
-Claude Code 하단에 Claude/Codex 사용량, 컨텍스트, Codex 실행 상태, 진행 중인
+Claude Code 하단에 Claude/Codex 사용량, 컨텍스트 사용률(%), 진행 중인
 태스크를 한 줄로 보여주는 상태줄. 상태줄 자체의 표시는 영어입니다.
 
 ![statusline preview](assets/statusline.svg)

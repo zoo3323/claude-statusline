@@ -2,8 +2,8 @@
 
 **English** · [한국어](README.ko.md)
 
-A one-line status line for Claude Code: Claude and Codex usage, the context
-window, Codex run state, and the task in progress.
+A one-line status line for Claude Code: Claude and Codex usage, context
+usage as a percentage, and the task in progress.
 
 ![statusline preview](assets/statusline.svg)
 
