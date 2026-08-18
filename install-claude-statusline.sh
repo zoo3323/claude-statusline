@@ -150,7 +150,7 @@ fi
 # Usage gauge — drains from 100% as the quota is spent.
 #  bar length = share of the 5-hour window left, block height (▁▂▃▄▅▆▇█) = weekly
 usage_gauge() { # $1=5h used% $2=weekly used% $3=theme colour -> "gauge remaining%"
-  local used=$1 weekly=$2 theme=$3 w=10 rem rem7 cells hc idx fill="" empty="" i c
+  local used=$1 weekly=$2 theme=$3 w=14 rem rem7 cells hc idx fill="" empty="" i c
   rem=$((100 - used)); [ "$rem" -lt 0 ] && rem=0
   cells=$(( (rem * w + 50) / 100 )); [ "$cells" -gt "$w" ] && cells=$w
   [ "$cells" -eq 0 ] && [ "$rem" -gt 0 ] && cells=1
