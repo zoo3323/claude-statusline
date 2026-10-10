@@ -9,13 +9,15 @@
 # window has reset. statusline-codex.sh calls this in the background at most once
 # every 5 minutes (via usage-refresh.sh).
 #
-# $1 (optional): freshness bound in seconds — skip the network call when any
-# source of the same numbers is younger than this. Defaults to 60, which only
-# guards against bursts (this endpoint answers a burst with 429 for a few
-# minutes, so a manual cu-refresh landing right after a background poll would
-# spend that budget for nothing). The status line passes 300: while you are
-# actively prompting, every API response drops a fresh payload, so polling
-# would fetch numbers that lose to it anyway.
+# $1 (optional): how long, in seconds, numbers that came from Claude Code itself
+# count as current. The status line passes 300. It saves a payload only when the
+# usage figures in it moved, so while that file is younger than this you are
+# prompting, and the next API response will beat whatever is fetched here.
+# Manual runs (cu-refresh, /refresh) pass nothing and fetch regardless.
+#
+# Either way a cache written within the last minute is left alone: this endpoint
+# answers a burst with 429 for a few minutes, so a manual run landing right
+# after a background poll would spend that budget for nothing.
 export PATH="$HOME/.local/bin:$PATH"
 
 STATE_DIR="$HOME/.claude/codex-status"
@@ -23,16 +25,16 @@ CACHE="$STATE_DIR/claude-usage.json"
 CREDS="$HOME/.claude/.credentials.json"
 
 MAX_AGE=$1
-case "$MAX_AGE" in ''|*[!0-9]*) MAX_AGE=60 ;; esac
+case "$MAX_AGE" in *[!0-9]*) MAX_AGE="" ;; esac
 now_s=$(date +%s)
-fresh() { # $1=file -> success when it is younger than MAX_AGE
+fresh() { # $1=file $2=seconds -> success when the file is younger than that
   local m
   [ -f "$1" ] || return 1
   m=$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0)
-  [ $(( now_s - m )) -lt "$MAX_AGE" ]
+  [ $(( now_s - m )) -lt "$2" ]
 }
-fresh "$CACHE" && exit 0
-fresh "$STATE_DIR/claude-last-input.json" && exit 0
+fresh "$CACHE" 60 && exit 0
+[ -n "$MAX_AGE" ] && fresh "$STATE_DIR/claude-last-input.json" "$MAX_AGE" && exit 0
 
 # OAuth token — the credentials file first, the macOS Keychain only if that file
 # is missing or already stale. An expired token is skipped rather than traded for
@@ -72,12 +74,17 @@ printf '%s' "$out" | jq -e '(.five_hour.utilization // .seven_day.utilization) !
 # Normalise to the shape the status line reads: integer percentages and Unix
 # epoch resets, matching what Claude Code puts in .rate_limits.
 printf '%s' "$out" | jq '
-  def epoch:                       # ISO-8601 (optional fraction/offset) -> epoch seconds
+  # ISO-8601 (optional fraction/offset) -> epoch seconds, to the nearest one.
+  # The endpoint says 02:49:59.78 for the reset Claude Code calls 02:50:00, and
+  # the status line tells windows apart by that time, so it has to round the
+  # same way instead of dropping the fraction.
+  def epoch:
     if . == null then 0
-    else (sub("\\.[0-9]+"; "")) as $s
+    else ((capture("\\.(?<f>[0-9]+)").f | "0.\(.)" | tonumber | round) // 0) as $carry
+      | (sub("\\.[0-9]+"; "")) as $s
       | ($s | capture("(?<off>Z|[+-][0-9]{2}:[0-9]{2})$") // {off: "Z"}) as $c
       | (($s | sub("(Z|[+-][0-9]{2}:[0-9]{2})$"; "")) + "Z" | fromdateiso8601) as $base
-      | if $c.off == "Z" then $base
+      | $carry + if $c.off == "Z" then $base
         else $base - ((($c.off[1:3] | tonumber) * 3600 + ($c.off[4:6] | tonumber) * 60)
                       * (if ($c.off[0:1]) == "+" then 1 else -1 end))
         end

@@ -8,18 +8,13 @@
 IFS= read -r -d '' input   # all of stdin
 STATE_DIR="$HOME/.claude/codex-status"
 
-# Keep the most recent payload that carried rate_limits, so other sessions (and
-# agents) can read the numbers Claude Code handed us last.
-case "$input" in
-  *'"rate_limits"'*) printf '%s' "$input" > "$STATE_DIR/claude-last-input.json" ;;
-esac
-
 # One jq pass pulls every payload field the render needs, tab-separated.
 # A missing value is emitted as "-" rather than an empty field: tab counts as
 # IFS whitespace, so empty fields would collapse and shift every later column.
-IFS=$'\t' read -r session_id cur_dir model effort ctx_pct l5 l5r l7 l7r <<< "$(jq -r '
+IFS=$'\t' read -r session_id transcript cur_dir model effort ctx_pct l5 l5r l7 l7r <<< "$(jq -r '
   def n: (. // "-") | (floor? // .);
   [ (.session_id // "-"),
+    (.transcript_path // "-"),
     (.workspace.current_dir // .cwd // "-"),
     (.model.display_name // "Claude"),
     (.effort.level // "-"),
@@ -27,6 +22,7 @@ IFS=$'\t' read -r session_id cur_dir model effort ctx_pct l5 l5r l7 l7r <<< "$(j
     (.rate_limits.five_hour.used_percentage | n), (.rate_limits.five_hour.resets_at // 0),
     (.rate_limits.seven_day.used_percentage | n), (.rate_limits.seven_day.resets_at // 0) ] | @tsv' <<< "$input" 2>/dev/null)"
 [ "$session_id" = "-" ] && session_id=""
+[ "$transcript" = "-" ] && transcript=""
 [ "$cur_dir" = "-" ] && cur_dir="."
 [ "$effort" = "-" ] && effort=""
 [ "$ctx_pct" = "-" ] && ctx_pct=""
@@ -122,25 +118,27 @@ reset_txt() { # $1=reset epoch -> "↻6d3h" / "↻1h23m" / "↻45m" (empty if pa
   else printf '%b↻%sm%b' "$GRAY" "$rm_m" "$RESET"; fi
 }
 
-# Pick the fresher of two readings of the same window. Usage only climbs until
-# the window resets, so a later resets_at means a newer window, and inside one
-# window the larger number is the more recent one.
-fresher() { # $1=usedA $2=resetA $3=usedB $4=resetB -> "used reset" (blank if neither)
+# A reading of a quota window is a used% and the epoch that window resets at.
+# Anything that is not a whole number counts as missing (jq hands over "-").
+is_num() { case "$1" in ''|*[!0-9]*) return 1 ;; esac; }
+
+# Two readings of one window carry the same reset time — give or take: the usage
+# endpoint reports it to the microsecond, a hair before the round second Claude
+# Code works with. Reset times this close together are the same window.
+SAME_WINDOW=60
+
+# Is reading B newer than reading A? Usage only climbs until the window resets,
+# so a later resets_at means a newer window, and inside one window the larger
+# number is the more recent one.
+newer() { # $1=usedA $2=resetA $3=usedB $4=resetB
   local ua=$1 ra=$2 ub=$3 rb=$4
-  case "$ua" in ''|*[!0-9]*) ua="" ;; esac
-  case "$ub" in ''|*[!0-9]*) ub="" ;; esac
-  case "$ra" in ''|*[!0-9]*) ra=0 ;; esac
-  case "$rb" in ''|*[!0-9]*) rb=0 ;; esac
-  if [ -z "$ua" ]; then
-    [ -n "$ub" ] && printf '%s %s' "$ub" "$rb"
-    return
-  fi
-  if [ -z "$ub" ]; then printf '%s %s' "$ua" "$ra"; return; fi
-  if [ "$rb" -gt "$ra" ] || { [ "$rb" -eq "$ra" ] && [ "$ub" -gt "$ua" ]; }; then
-    printf '%s %s' "$ub" "$rb"
-  else
-    printf '%s %s' "$ua" "$ra"
-  fi
+  is_num "$ub" || return 1
+  is_num "$ua" || return 0
+  is_num "$ra" || ra=0
+  is_num "$rb" || rb=0
+  [ $((rb - ra)) -gt "$SAME_WINDOW" ] && return 0
+  [ $((ra - rb)) -gt "$SAME_WINDOW" ] && return 1
+  [ "$ub" -gt "$ua" ]
 }
 
 # Claude account usage (theme: Claude coral #D97757, height = weekly usage).
@@ -148,18 +146,20 @@ fresher() { # $1=usedA $2=resetA $3=usedB $4=resetB -> "used reset" (blank if ne
 # Claude Code only refills the rate_limits block after an API response, so an
 # idle session would keep painting the numbers it last saw — and once a window
 # rolls over it would keep painting them for hours. So we read three sources and
-# draw the freshest: this payload, the last payload any session received, and a
-# background poll of the account usage endpoint (account info, not a model
-# request: it costs no usage).
+# draw the freshest: this payload, the furthest-along payload any session has
+# been handed (saved below), and a background poll of the account usage endpoint
+# (account info, not a model request: it costs no usage).
 CL_CACHE="$STATE_DIR/claude-usage.json"
+LAST_INPUT="$STATE_DIR/claude-last-input.json"
 
 # One trigger for both usage polls: at most every 5 minutes, kick the shared
 # wrapper in the background. The mark file is touched on every attempt and
 # shared by all sessions, so failures back off at the same pace instead of
 # hammering — the Claude endpoint answers a burst with 429 for a few minutes.
 # The wrapper gets the same 300s as a freshness bound: each refresh script
-# skips its network call when a live source (payload, session log, cache) is
-# younger than that, so while you are actively working nothing is fetched.
+# skips its network call when Claude Code or Codex itself reported new numbers
+# more recently than that (the saved payload below, the codex session log), so
+# while you are actively working nothing is fetched.
 U_MARK="$STATE_DIR/usage.last"
 u_mark_m=0; [ -f "$U_MARK" ] && u_mark_m=$(mtime_of "$U_MARK")
 if [ $((now_s - u_mark_m)) -gt 300 ]; then
@@ -173,20 +173,59 @@ fi
 PAYLOAD_TSV='def n: (. // "-") | (floor? // .);
   [ (.rate_limits.five_hour.used_percentage | n), (.rate_limits.five_hour.resets_at // 0),
     (.rate_limits.seven_day.used_percentage | n), (.rate_limits.seven_day.resets_at // 0) ] | @tsv'
-IFS=$'\t' read -r p5 p5r p7 p7r <<< "$(jq -r "$PAYLOAD_TSV" "$STATE_DIR/claude-last-input.json" 2>/dev/null)"
+IFS=$'\t' read -r p5 p5r p7 p7r <<< "$(jq -r "$PAYLOAD_TSV" "$LAST_INPUT" 2>/dev/null)"
 IFS=$'\t' read -r a5 a5r a7 a7r <<< "$(jq -r 'def n: (. // "-") | (floor? // .);
   [ (.five_hour.used_percentage | n), (.five_hour.resets_at // 0),
     (.seven_day.used_percentage | n), (.seven_day.resets_at // 0) ] | @tsv' "$CL_CACHE" 2>/dev/null)"
 
-read -r c5 c5r <<< "$(fresher "$l5" "$l5r" "$p5" "$p5r")"
-read -r c5 c5r <<< "$(fresher "$c5" "$c5r" "$a5" "$a5r")"
-read -r c7 c7r <<< "$(fresher "$l7" "$l7r" "$p7" "$p7r")"
-read -r c7 c7r <<< "$(fresher "$c7" "$c7r" "$a7" "$a7r")"
+# Save this payload for the other sessions (and agents) — but only when it is
+# news, i.e. further along than the saved one. An idle session is re-rendered
+# every couple of seconds with the payload it last received; saving that would
+# overwrite what a busier session just learned, and would keep the file's mtime
+# at "now", which claude-usage-refresh.sh reads as "Claude Code reported usage a
+# moment ago, no need to poll". The weekly reading decides and the 5-hour one
+# only breaks a tie, so two sessions that are each ahead in one window cannot
+# keep overwriting each other.
+payload_is_news() {
+  newer "$p7" "$p7r" "$l7" "$l7r" && return 0
+  newer "$l7" "$l7r" "$p7" "$p7r" && return 1
+  newer "$p5" "$p5r" "$l5" "$l5r"
+}
+# "Larger is newer" only holds while usage climbs. It can also drop inside a
+# window — limits get reset early, or you log in to another account — and then
+# an old high reading would win until its window ran out. The poll is the one
+# source with a known time, so a reading that predates it steps aside for it:
+# the saved payload when the poll is newer than that file, this session's own
+# when the poll is newer than its transcript (nothing has happened here since).
+outdated_p=""; outdated_l=""
+if payload_is_news; then
+  printf '%s' "$input" > "$LAST_INPUT.tmp" && mv "$LAST_INPUT.tmp" "$LAST_INPUT"
+  p5=$l5; p5r=$l5r; p7=$l7; p7r=$l7r
+else
+  [ "$CL_CACHE" -nt "$LAST_INPUT" ] && outdated_p=1
+  [ -n "$transcript" ] && [ "$CL_CACHE" -nt "$transcript" ] && outdated_l=1
+fi
+
+# The freshest reading of one window. Outdated ones only count when the poll
+# has nothing for that window.
+pick() { # $1 $2=payload  $3 $4=saved payload  $5 $6=poll  -> best_used best_reset
+  best_used=$5; best_reset=$6
+  if [ -z "$outdated_p" ] || ! is_num "$5"; then
+    newer "$best_used" "$best_reset" "$3" "$4" && { best_used=$3; best_reset=$4; }
+  fi
+  if [ -z "$outdated_l" ] || ! is_num "$5"; then
+    newer "$best_used" "$best_reset" "$1" "$2" && { best_used=$1; best_reset=$2; }
+  fi
+  is_num "$best_used" || best_used=""
+  is_num "$best_reset" || best_reset=0
+}
+pick "$l5" "$l5r" "$p5" "$p5r" "$a5" "$a5r"; c5=$best_used; c5r=$best_reset
+pick "$l7" "$l7r" "$p7" "$p7r" "$a7" "$a7r"; c7=$best_used; c7r=$best_reset
 
 # A window whose reset time has passed has already rolled over: the numbers we
 # hold describe the window before it, so the current one starts empty.
-if [ -n "$c5" ] && [ "${c5r:-0}" -gt 0 ] && [ "$c5r" -le "$now_s" ]; then c5=0; c5r=0; fi
-if [ -n "$c7" ] && [ "${c7r:-0}" -gt 0 ] && [ "$c7r" -le "$now_s" ]; then c7=0; c7r=0; fi
+if [ -n "$c5" ] && [ "$c5r" -gt 0 ] && [ "$c5r" -le "$now_s" ]; then c5=0; c5r=0; fi
+if [ -n "$c7" ] && [ "$c7r" -gt 0 ] && [ "$c7r" -le "$now_s" ]; then c7=0; c7r=0; fi
 
 claude_part=""
 if [ -n "$c5" ]; then

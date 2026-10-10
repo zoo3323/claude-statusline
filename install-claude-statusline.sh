@@ -10,7 +10,7 @@
 # leaving a truncated script behind.
 set -e
 
-VERSION="1.1.0"
+VERSION="1.1.1"
 
 CLAUDE_DIR="$HOME/.claude"
 SCRIPTS_DIR="$CLAUDE_DIR/scripts"
@@ -98,18 +98,13 @@ cat > "$SCRIPTS_DIR/statusline-codex.sh" <<'EMBEDDED_statusline-codex.sh'
 IFS= read -r -d '' input   # all of stdin
 STATE_DIR="$HOME/.claude/codex-status"
 
-# Keep the most recent payload that carried rate_limits, so other sessions (and
-# agents) can read the numbers Claude Code handed us last.
-case "$input" in
-  *'"rate_limits"'*) printf '%s' "$input" > "$STATE_DIR/claude-last-input.json" ;;
-esac
-
 # One jq pass pulls every payload field the render needs, tab-separated.
 # A missing value is emitted as "-" rather than an empty field: tab counts as
 # IFS whitespace, so empty fields would collapse and shift every later column.
-IFS=$'\t' read -r session_id cur_dir model effort ctx_pct l5 l5r l7 l7r <<< "$(jq -r '
+IFS=$'\t' read -r session_id transcript cur_dir model effort ctx_pct l5 l5r l7 l7r <<< "$(jq -r '
   def n: (. // "-") | (floor? // .);
   [ (.session_id // "-"),
+    (.transcript_path // "-"),
     (.workspace.current_dir // .cwd // "-"),
     (.model.display_name // "Claude"),
     (.effort.level // "-"),
@@ -117,6 +112,7 @@ IFS=$'\t' read -r session_id cur_dir model effort ctx_pct l5 l5r l7 l7r <<< "$(j
     (.rate_limits.five_hour.used_percentage | n), (.rate_limits.five_hour.resets_at // 0),
     (.rate_limits.seven_day.used_percentage | n), (.rate_limits.seven_day.resets_at // 0) ] | @tsv' <<< "$input" 2>/dev/null)"
 [ "$session_id" = "-" ] && session_id=""
+[ "$transcript" = "-" ] && transcript=""
 [ "$cur_dir" = "-" ] && cur_dir="."
 [ "$effort" = "-" ] && effort=""
 [ "$ctx_pct" = "-" ] && ctx_pct=""
@@ -212,25 +208,27 @@ reset_txt() { # $1=reset epoch -> "↻6d3h" / "↻1h23m" / "↻45m" (empty if pa
   else printf '%b↻%sm%b' "$GRAY" "$rm_m" "$RESET"; fi
 }
 
-# Pick the fresher of two readings of the same window. Usage only climbs until
-# the window resets, so a later resets_at means a newer window, and inside one
-# window the larger number is the more recent one.
-fresher() { # $1=usedA $2=resetA $3=usedB $4=resetB -> "used reset" (blank if neither)
+# A reading of a quota window is a used% and the epoch that window resets at.
+# Anything that is not a whole number counts as missing (jq hands over "-").
+is_num() { case "$1" in ''|*[!0-9]*) return 1 ;; esac; }
+
+# Two readings of one window carry the same reset time — give or take: the usage
+# endpoint reports it to the microsecond, a hair before the round second Claude
+# Code works with. Reset times this close together are the same window.
+SAME_WINDOW=60
+
+# Is reading B newer than reading A? Usage only climbs until the window resets,
+# so a later resets_at means a newer window, and inside one window the larger
+# number is the more recent one.
+newer() { # $1=usedA $2=resetA $3=usedB $4=resetB
   local ua=$1 ra=$2 ub=$3 rb=$4
-  case "$ua" in ''|*[!0-9]*) ua="" ;; esac
-  case "$ub" in ''|*[!0-9]*) ub="" ;; esac
-  case "$ra" in ''|*[!0-9]*) ra=0 ;; esac
-  case "$rb" in ''|*[!0-9]*) rb=0 ;; esac
-  if [ -z "$ua" ]; then
-    [ -n "$ub" ] && printf '%s %s' "$ub" "$rb"
-    return
-  fi
-  if [ -z "$ub" ]; then printf '%s %s' "$ua" "$ra"; return; fi
-  if [ "$rb" -gt "$ra" ] || { [ "$rb" -eq "$ra" ] && [ "$ub" -gt "$ua" ]; }; then
-    printf '%s %s' "$ub" "$rb"
-  else
-    printf '%s %s' "$ua" "$ra"
-  fi
+  is_num "$ub" || return 1
+  is_num "$ua" || return 0
+  is_num "$ra" || ra=0
+  is_num "$rb" || rb=0
+  [ $((rb - ra)) -gt "$SAME_WINDOW" ] && return 0
+  [ $((ra - rb)) -gt "$SAME_WINDOW" ] && return 1
+  [ "$ub" -gt "$ua" ]
 }
 
 # Claude account usage (theme: Claude coral #D97757, height = weekly usage).
@@ -238,18 +236,20 @@ fresher() { # $1=usedA $2=resetA $3=usedB $4=resetB -> "used reset" (blank if ne
 # Claude Code only refills the rate_limits block after an API response, so an
 # idle session would keep painting the numbers it last saw — and once a window
 # rolls over it would keep painting them for hours. So we read three sources and
-# draw the freshest: this payload, the last payload any session received, and a
-# background poll of the account usage endpoint (account info, not a model
-# request: it costs no usage).
+# draw the freshest: this payload, the furthest-along payload any session has
+# been handed (saved below), and a background poll of the account usage endpoint
+# (account info, not a model request: it costs no usage).
 CL_CACHE="$STATE_DIR/claude-usage.json"
+LAST_INPUT="$STATE_DIR/claude-last-input.json"
 
 # One trigger for both usage polls: at most every 5 minutes, kick the shared
 # wrapper in the background. The mark file is touched on every attempt and
 # shared by all sessions, so failures back off at the same pace instead of
 # hammering — the Claude endpoint answers a burst with 429 for a few minutes.
 # The wrapper gets the same 300s as a freshness bound: each refresh script
-# skips its network call when a live source (payload, session log, cache) is
-# younger than that, so while you are actively working nothing is fetched.
+# skips its network call when Claude Code or Codex itself reported new numbers
+# more recently than that (the saved payload below, the codex session log), so
+# while you are actively working nothing is fetched.
 U_MARK="$STATE_DIR/usage.last"
 u_mark_m=0; [ -f "$U_MARK" ] && u_mark_m=$(mtime_of "$U_MARK")
 if [ $((now_s - u_mark_m)) -gt 300 ]; then
@@ -263,20 +263,59 @@ fi
 PAYLOAD_TSV='def n: (. // "-") | (floor? // .);
   [ (.rate_limits.five_hour.used_percentage | n), (.rate_limits.five_hour.resets_at // 0),
     (.rate_limits.seven_day.used_percentage | n), (.rate_limits.seven_day.resets_at // 0) ] | @tsv'
-IFS=$'\t' read -r p5 p5r p7 p7r <<< "$(jq -r "$PAYLOAD_TSV" "$STATE_DIR/claude-last-input.json" 2>/dev/null)"
+IFS=$'\t' read -r p5 p5r p7 p7r <<< "$(jq -r "$PAYLOAD_TSV" "$LAST_INPUT" 2>/dev/null)"
 IFS=$'\t' read -r a5 a5r a7 a7r <<< "$(jq -r 'def n: (. // "-") | (floor? // .);
   [ (.five_hour.used_percentage | n), (.five_hour.resets_at // 0),
     (.seven_day.used_percentage | n), (.seven_day.resets_at // 0) ] | @tsv' "$CL_CACHE" 2>/dev/null)"
 
-read -r c5 c5r <<< "$(fresher "$l5" "$l5r" "$p5" "$p5r")"
-read -r c5 c5r <<< "$(fresher "$c5" "$c5r" "$a5" "$a5r")"
-read -r c7 c7r <<< "$(fresher "$l7" "$l7r" "$p7" "$p7r")"
-read -r c7 c7r <<< "$(fresher "$c7" "$c7r" "$a7" "$a7r")"
+# Save this payload for the other sessions (and agents) — but only when it is
+# news, i.e. further along than the saved one. An idle session is re-rendered
+# every couple of seconds with the payload it last received; saving that would
+# overwrite what a busier session just learned, and would keep the file's mtime
+# at "now", which claude-usage-refresh.sh reads as "Claude Code reported usage a
+# moment ago, no need to poll". The weekly reading decides and the 5-hour one
+# only breaks a tie, so two sessions that are each ahead in one window cannot
+# keep overwriting each other.
+payload_is_news() {
+  newer "$p7" "$p7r" "$l7" "$l7r" && return 0
+  newer "$l7" "$l7r" "$p7" "$p7r" && return 1
+  newer "$p5" "$p5r" "$l5" "$l5r"
+}
+# "Larger is newer" only holds while usage climbs. It can also drop inside a
+# window — limits get reset early, or you log in to another account — and then
+# an old high reading would win until its window ran out. The poll is the one
+# source with a known time, so a reading that predates it steps aside for it:
+# the saved payload when the poll is newer than that file, this session's own
+# when the poll is newer than its transcript (nothing has happened here since).
+outdated_p=""; outdated_l=""
+if payload_is_news; then
+  printf '%s' "$input" > "$LAST_INPUT.tmp" && mv "$LAST_INPUT.tmp" "$LAST_INPUT"
+  p5=$l5; p5r=$l5r; p7=$l7; p7r=$l7r
+else
+  [ "$CL_CACHE" -nt "$LAST_INPUT" ] && outdated_p=1
+  [ -n "$transcript" ] && [ "$CL_CACHE" -nt "$transcript" ] && outdated_l=1
+fi
+
+# The freshest reading of one window. Outdated ones only count when the poll
+# has nothing for that window.
+pick() { # $1 $2=payload  $3 $4=saved payload  $5 $6=poll  -> best_used best_reset
+  best_used=$5; best_reset=$6
+  if [ -z "$outdated_p" ] || ! is_num "$5"; then
+    newer "$best_used" "$best_reset" "$3" "$4" && { best_used=$3; best_reset=$4; }
+  fi
+  if [ -z "$outdated_l" ] || ! is_num "$5"; then
+    newer "$best_used" "$best_reset" "$1" "$2" && { best_used=$1; best_reset=$2; }
+  fi
+  is_num "$best_used" || best_used=""
+  is_num "$best_reset" || best_reset=0
+}
+pick "$l5" "$l5r" "$p5" "$p5r" "$a5" "$a5r"; c5=$best_used; c5r=$best_reset
+pick "$l7" "$l7r" "$p7" "$p7r" "$a7" "$a7r"; c7=$best_used; c7r=$best_reset
 
 # A window whose reset time has passed has already rolled over: the numbers we
 # hold describe the window before it, so the current one starts empty.
-if [ -n "$c5" ] && [ "${c5r:-0}" -gt 0 ] && [ "$c5r" -le "$now_s" ]; then c5=0; c5r=0; fi
-if [ -n "$c7" ] && [ "${c7r:-0}" -gt 0 ] && [ "$c7r" -le "$now_s" ]; then c7=0; c7r=0; fi
+if [ -n "$c5" ] && [ "$c5r" -gt 0 ] && [ "$c5r" -le "$now_s" ]; then c5=0; c5r=0; fi
+if [ -n "$c7" ] && [ "$c7r" -gt 0 ] && [ "$c7r" -le "$now_s" ]; then c7=0; c7r=0; fi
 
 claude_part=""
 if [ -n "$c5" ]; then
@@ -373,11 +412,14 @@ cat > "$SCRIPTS_DIR/codex-usage-refresh.sh" <<'EMBEDDED_codex-usage-refresh.sh'
 # usage. statusline-codex.sh calls it in the background at most once every
 # 5 minutes (via usage-refresh.sh).
 #
-# $1 (optional): freshness bound in seconds — skip the network call when any
-# source of the same numbers is younger than this. Defaults to 60 (burst
-# guard for manual cu-refresh runs). The status line passes 300: while codex
-# is being called, every call drops fresh rate_limits into the session log,
-# so polling would fetch numbers the log already beats.
+# $1 (optional): how long, in seconds, numbers that came from Codex itself count
+# as current. The status line passes 300: every codex call drops fresh
+# rate_limits into its session log, so while that log is younger than this,
+# polling would fetch numbers the log already beats. Manual runs (cu-refresh,
+# /refresh) pass nothing and fetch regardless.
+#
+# Either way a cache written within the last minute is left alone, so a manual
+# run landing right after a background poll does not ask twice.
 export PATH="$HOME/.local/bin:$PATH"
 
 AUTH="$HOME/.codex/auth.json"
@@ -385,21 +427,23 @@ CACHE="$HOME/.claude/codex-status/codex-usage.json"
 [ -f "$AUTH" ] || exit 0
 
 MAX_AGE=$1
-case "$MAX_AGE" in ''|*[!0-9]*) MAX_AGE=60 ;; esac
+case "$MAX_AGE" in *[!0-9]*) MAX_AGE="" ;; esac
 now_s=$(date +%s)
-fresh() { # $1=file -> success when it is younger than MAX_AGE
+fresh() { # $1=file $2=seconds -> success when the file is younger than that
   local m
   [ -f "$1" ] || return 1
   m=$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0)
-  [ $(( now_s - m )) -lt "$MAX_AGE" ]
+  [ $(( now_s - m )) -lt "$2" ]
 }
-fresh "$CACHE" && exit 0
-for cf in $(ls -t "$HOME/.codex/sessions"/*/*/*/rollout-*.jsonl 2>/dev/null | head -3); do
-  if grep -q '"rate_limits"' "$cf" 2>/dev/null; then
-    fresh "$cf" && exit 0
-    break
-  fi
-done
+fresh "$CACHE" 60 && exit 0
+if [ -n "$MAX_AGE" ]; then
+  for cf in $(ls -t "$HOME/.codex/sessions"/*/*/*/rollout-*.jsonl 2>/dev/null | head -3); do
+    if grep -q '"rate_limits"' "$cf" 2>/dev/null; then
+      fresh "$cf" "$MAX_AGE" && exit 0
+      break
+    fi
+  done
+fi
 
 TOKEN=$(jq -r '.tokens.access_token // empty' "$AUTH" 2>/dev/null)
 ACC=$(jq -r '.tokens.account_id // empty' "$AUTH" 2>/dev/null)
@@ -430,13 +474,15 @@ cat > "$SCRIPTS_DIR/claude-usage-refresh.sh" <<'EMBEDDED_claude-usage-refresh.sh
 # window has reset. statusline-codex.sh calls this in the background at most once
 # every 5 minutes (via usage-refresh.sh).
 #
-# $1 (optional): freshness bound in seconds — skip the network call when any
-# source of the same numbers is younger than this. Defaults to 60, which only
-# guards against bursts (this endpoint answers a burst with 429 for a few
-# minutes, so a manual cu-refresh landing right after a background poll would
-# spend that budget for nothing). The status line passes 300: while you are
-# actively prompting, every API response drops a fresh payload, so polling
-# would fetch numbers that lose to it anyway.
+# $1 (optional): how long, in seconds, numbers that came from Claude Code itself
+# count as current. The status line passes 300. It saves a payload only when the
+# usage figures in it moved, so while that file is younger than this you are
+# prompting, and the next API response will beat whatever is fetched here.
+# Manual runs (cu-refresh, /refresh) pass nothing and fetch regardless.
+#
+# Either way a cache written within the last minute is left alone: this endpoint
+# answers a burst with 429 for a few minutes, so a manual run landing right
+# after a background poll would spend that budget for nothing.
 export PATH="$HOME/.local/bin:$PATH"
 
 STATE_DIR="$HOME/.claude/codex-status"
@@ -444,16 +490,16 @@ CACHE="$STATE_DIR/claude-usage.json"
 CREDS="$HOME/.claude/.credentials.json"
 
 MAX_AGE=$1
-case "$MAX_AGE" in ''|*[!0-9]*) MAX_AGE=60 ;; esac
+case "$MAX_AGE" in *[!0-9]*) MAX_AGE="" ;; esac
 now_s=$(date +%s)
-fresh() { # $1=file -> success when it is younger than MAX_AGE
+fresh() { # $1=file $2=seconds -> success when the file is younger than that
   local m
   [ -f "$1" ] || return 1
   m=$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0)
-  [ $(( now_s - m )) -lt "$MAX_AGE" ]
+  [ $(( now_s - m )) -lt "$2" ]
 }
-fresh "$CACHE" && exit 0
-fresh "$STATE_DIR/claude-last-input.json" && exit 0
+fresh "$CACHE" 60 && exit 0
+[ -n "$MAX_AGE" ] && fresh "$STATE_DIR/claude-last-input.json" "$MAX_AGE" && exit 0
 
 # OAuth token — the credentials file first, the macOS Keychain only if that file
 # is missing or already stale. An expired token is skipped rather than traded for
@@ -493,12 +539,17 @@ printf '%s' "$out" | jq -e '(.five_hour.utilization // .seven_day.utilization) !
 # Normalise to the shape the status line reads: integer percentages and Unix
 # epoch resets, matching what Claude Code puts in .rate_limits.
 printf '%s' "$out" | jq '
-  def epoch:                       # ISO-8601 (optional fraction/offset) -> epoch seconds
+  # ISO-8601 (optional fraction/offset) -> epoch seconds, to the nearest one.
+  # The endpoint says 02:49:59.78 for the reset Claude Code calls 02:50:00, and
+  # the status line tells windows apart by that time, so it has to round the
+  # same way instead of dropping the fraction.
+  def epoch:
     if . == null then 0
-    else (sub("\\.[0-9]+"; "")) as $s
+    else ((capture("\\.(?<f>[0-9]+)").f | "0.\(.)" | tonumber | round) // 0) as $carry
+      | (sub("\\.[0-9]+"; "")) as $s
       | ($s | capture("(?<off>Z|[+-][0-9]{2}:[0-9]{2})$") // {off: "Z"}) as $c
       | (($s | sub("(Z|[+-][0-9]{2}:[0-9]{2})$"; "")) + "Z" | fromdateiso8601) as $base
-      | if $c.off == "Z" then $base
+      | $carry + if $c.off == "Z" then $base
         else $base - ((($c.off[1:3] | tonumber) * 3600 + ($c.off[4:6] | tonumber) * 60)
                       * (if ($c.off[0:1]) == "+" then 1 else -1 end))
         end
@@ -512,13 +563,13 @@ chmod +x "$SCRIPTS_DIR/claude-usage-refresh.sh"
 
 cat > "$SCRIPTS_DIR/usage-refresh.sh" <<'EMBEDDED_usage-refresh.sh'
 #!/bin/bash
-# Refreshes both usage caches. Bound to the `cu-refresh` shell alias, used by
-# the /refresh skill, and called by the status line's shared 5-minute trigger.
+# Refreshes both usage caches. Bound to the `cu-refresh` command, used by the
+# /refresh skill, and called by the status line's shared 5-minute trigger.
 #
-# $1 (optional): freshness bound in seconds, passed through to both scripts —
-# each one skips its network call when it already has a source younger than
-# this. Manual runs omit it (the scripts default to a short burst guard), the
-# status line passes 300 so nothing is fetched while you are actively working.
+# $1 (optional): passed through to both scripts — how long, in seconds, numbers
+# that Claude Code or Codex reported on its own count as current. The status
+# line passes 300 so nothing is fetched while you are actively working. Manual
+# runs omit it and fetch regardless, bar a one-minute burst guard on each cache.
 #
 # Each half is independent: one failing (not logged in, endpoint rate limited)
 # leaves the other's cache updated and the previous values in place.

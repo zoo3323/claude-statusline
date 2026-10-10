@@ -4,11 +4,14 @@
 # usage. statusline-codex.sh calls it in the background at most once every
 # 5 minutes (via usage-refresh.sh).
 #
-# $1 (optional): freshness bound in seconds — skip the network call when any
-# source of the same numbers is younger than this. Defaults to 60 (burst
-# guard for manual cu-refresh runs). The status line passes 300: while codex
-# is being called, every call drops fresh rate_limits into the session log,
-# so polling would fetch numbers the log already beats.
+# $1 (optional): how long, in seconds, numbers that came from Codex itself count
+# as current. The status line passes 300: every codex call drops fresh
+# rate_limits into its session log, so while that log is younger than this,
+# polling would fetch numbers the log already beats. Manual runs (cu-refresh,
+# /refresh) pass nothing and fetch regardless.
+#
+# Either way a cache written within the last minute is left alone, so a manual
+# run landing right after a background poll does not ask twice.
 export PATH="$HOME/.local/bin:$PATH"
 
 AUTH="$HOME/.codex/auth.json"
@@ -16,21 +19,23 @@ CACHE="$HOME/.claude/codex-status/codex-usage.json"
 [ -f "$AUTH" ] || exit 0
 
 MAX_AGE=$1
-case "$MAX_AGE" in ''|*[!0-9]*) MAX_AGE=60 ;; esac
+case "$MAX_AGE" in *[!0-9]*) MAX_AGE="" ;; esac
 now_s=$(date +%s)
-fresh() { # $1=file -> success when it is younger than MAX_AGE
+fresh() { # $1=file $2=seconds -> success when the file is younger than that
   local m
   [ -f "$1" ] || return 1
   m=$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0)
-  [ $(( now_s - m )) -lt "$MAX_AGE" ]
+  [ $(( now_s - m )) -lt "$2" ]
 }
-fresh "$CACHE" && exit 0
-for cf in $(ls -t "$HOME/.codex/sessions"/*/*/*/rollout-*.jsonl 2>/dev/null | head -3); do
-  if grep -q '"rate_limits"' "$cf" 2>/dev/null; then
-    fresh "$cf" && exit 0
-    break
-  fi
-done
+fresh "$CACHE" 60 && exit 0
+if [ -n "$MAX_AGE" ]; then
+  for cf in $(ls -t "$HOME/.codex/sessions"/*/*/*/rollout-*.jsonl 2>/dev/null | head -3); do
+    if grep -q '"rate_limits"' "$cf" 2>/dev/null; then
+      fresh "$cf" "$MAX_AGE" && exit 0
+      break
+    fi
+  done
+fi
 
 TOKEN=$(jq -r '.tokens.access_token // empty' "$AUTH" 2>/dev/null)
 ACC=$(jq -r '.tokens.account_id // empty' "$AUTH" 2>/dev/null)
