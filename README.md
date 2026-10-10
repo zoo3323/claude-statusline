@@ -29,8 +29,8 @@ Restart Claude Code and the status line appears. `jq` is fetched into
 
 Usage keeps moving while you are idle — it is polled in the background, not only
 after you prompt. To refresh on the spot: `cu-refresh` in a terminal, `/refresh`
-inside Claude Code. The Codex parts only appear when Codex MCP is wired into
-Claude Code.
+inside Claude Code. The Codex gauge only appears when the Codex CLI is logged
+in on this machine.
 
 The poll reuses the OAuth tokens Claude Code and Codex already store on this
 machine to read your account usage. Those are account-info requests: they
@@ -50,4 +50,5 @@ Reverts exactly what the installer touched and leaves everything else alone.
 
 The scripts live in `src/`. `install-claude-statusline.sh` is generated from them
 by `./build.sh` — edit `src/`, not the installer. `./build.sh --check` fails when
-the committed installer is out of date.
+the committed installer is out of date. `./test.sh` runs the scripts against a
+throwaway home directory with the network stubbed out.
