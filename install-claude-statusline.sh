@@ -661,11 +661,13 @@ merge_settings() {
   ' "$SETTINGS" > "$SETTINGS.tmp" && mv "$SETTINGS.tmp" "$SETTINGS"
 }
 
-# Leftovers from versions before 1.1.0: the hook script and its per-session
-# counter/lock files.
+# Leftovers from earlier versions: the hook script and its per-session
+# counter/lock files (before 1.1.0), and the per-session payload dumps the very
+# first status line wrote on every render (*.state.json).
 remove_legacy_files() {
   rm -f "$SCRIPTS_DIR/codex-status-set.sh" "$STATE_DIR"/*.count \
-        "$STATE_DIR"/claude-usage.last "$STATE_DIR"/codex-usage.last
+        "$STATE_DIR"/claude-usage.last "$STATE_DIR"/codex-usage.last \
+        "$STATE_DIR"/*.state.json
   rm -rf "$STATE_DIR"/*.lock
 }
 
