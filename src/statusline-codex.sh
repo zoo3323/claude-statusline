@@ -1,7 +1,11 @@
 #!/bin/bash
 # Claude Code statusLine:
 #   folder | model (effort) | codex usage | claude usage | context% | task
-input=$(cat)
+#
+# This runs every couple of seconds in every open session, and each external
+# command costs a few milliseconds, so the path every render takes sticks to
+# shell builtins wherever one does the job.
+IFS= read -r -d '' input   # all of stdin
 STATE_DIR="$HOME/.claude/codex-status"
 
 # Keep the most recent payload that carried rate_limits, so other sessions (and
@@ -13,7 +17,7 @@ esac
 # One jq pass pulls every payload field the render needs, tab-separated.
 # A missing value is emitted as "-" rather than an empty field: tab counts as
 # IFS whitespace, so empty fields would collapse and shift every later column.
-IFS=$'\t' read -r session_id cur_dir model effort ctx_pct l5 l5r l7 l7r <<< "$(echo "$input" | jq -r '
+IFS=$'\t' read -r session_id cur_dir model effort ctx_pct l5 l5r l7 l7r <<< "$(jq -r '
   def n: (. // "-") | (floor? // .);
   [ (.session_id // "-"),
     (.workspace.current_dir // .cwd // "-"),
@@ -21,7 +25,7 @@ IFS=$'\t' read -r session_id cur_dir model effort ctx_pct l5 l5r l7 l7r <<< "$(e
     (.effort.level // "-"),
     (.context_window.used_percentage | n),
     (.rate_limits.five_hour.used_percentage | n), (.rate_limits.five_hour.resets_at // 0),
-    (.rate_limits.seven_day.used_percentage | n), (.rate_limits.seven_day.resets_at // 0) ] | @tsv' 2>/dev/null)"
+    (.rate_limits.seven_day.used_percentage | n), (.rate_limits.seven_day.resets_at // 0) ] | @tsv' <<< "$input" 2>/dev/null)"
 [ "$session_id" = "-" ] && session_id=""
 [ "$cur_dir" = "-" ] && cur_dir="."
 [ "$effort" = "-" ] && effort=""
@@ -34,25 +38,35 @@ GRAY='\033[38;5;245m'   # separators, secondary info (reset time), idle state
 RAIL='\033[38;5;245m'   # gauge end rails
 EMPTY='\033[38;5;240m'  # empty gauge cells (a touch darker than the fill)
 
-mtime_of() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }
+# File mtime in epoch seconds, 0 when the file is missing. On macOS
+# /usr/bin/stat is the BSD one whatever else is on PATH; anywhere else try GNU
+# first, because there `stat -f` means something else entirely.
+case "$OSTYPE" in
+  darwin*) mtime_of() { /usr/bin/stat -f %m "$1" 2>/dev/null || echo 0; } ;;
+  *)       mtime_of() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; } ;;
+esac
 now_s=$(date +%s)
 
-dir_name=$(basename "$cur_dir")
+dir_name=${cur_dir%/}; dir_name=${dir_name##*/}
+[ -n "$dir_name" ] || dir_name=$cur_dir
 # Drop the trailing " (… context)" suffix: "Opus 4.8 (1M context)" -> "Opus 4.8"
-model=$(printf '%s' "$model" | sed -E 's/ *\([^)]*context\)$//')
+ctx_suffix='^(.*[^ ])? *\([^)]*context\)$'
+[[ $model =~ $ctx_suffix ]] && model=${BASH_REMATCH[1]}
 
 # effort: from JSON .effort.level, else the $CLAUDE_EFFORT environment variable
 [ -z "$effort" ] && effort="$CLAUDE_EFFORT"
 
 # model (effort) — segment colour is the model: Fable magenta, Opus blue,
 # Sonnet cyan, Haiku green
-case "$(echo "$model" | tr '[:upper:]' '[:lower:]')" in
+shopt -s nocasematch
+case "$model" in
   *fable*)  mcolor='\033[38;5;213m' ;;
   *opus*)   mcolor='\033[38;5;75m'  ;;
   *sonnet*) mcolor='\033[38;5;80m'  ;;
   *haiku*)  mcolor='\033[38;5;114m' ;;
   *)        mcolor='\033[0m' ;;
 esac
+shopt -u nocasematch
 if [ -n "$effort" ]; then
   model_part=$(printf '%b%s (%s)%b' "$mcolor" "$model" "$effort" "$RESET")
 else
@@ -100,7 +114,7 @@ reset_txt() { # $1=reset epoch -> "↻6d3h" / "↻1h23m" / "↻45m" (empty if pa
   # window comes back the display returns to hours/minutes on its own.
   local at=$1 remain rm_d rm_h rm_m
   [ -z "$at" ] && return
-  remain=$(( at - $(date +%s) )) 2>/dev/null || return
+  remain=$(( at - now_s )) 2>/dev/null || return
   [ "$remain" -le 0 ] && return
   rm_d=$((remain / 86400)); rm_h=$(( (remain % 86400) / 3600 )); rm_m=$(( (remain % 3600) / 60 ))
   if [ "$rm_d" -gt 0 ]; then printf '%b↻%sd%sh%b' "$GRAY" "$rm_d" "$rm_h" "$RESET"
@@ -194,18 +208,22 @@ cache_m=0; [ -f "$CU_CACHE" ] && cache_m=$(mtime_of "$CU_CACHE")
 # the previous answer still stands.
 SESS_CACHE="$STATE_DIR/codex-sess.cache"
 cu_line=""; sess_m=0
-sess_files=$(ls -t "$HOME/.codex/sessions"/*/*/*/rollout-*.jsonl 2>/dev/null | head -3)
-newest=$(printf '%s\n' "$sess_files" | head -1)
+sess_files=$(ls -t "$HOME/.codex/sessions"/*/*/*/rollout-*.jsonl 2>/dev/null)
+newest=${sess_files%%$'\n'*}
 if [ -n "$newest" ]; then
   sess_key="$newest $(mtime_of "$newest")"
-  if [ -f "$SESS_CACHE" ] && [ "$(sed -n 1p "$SESS_CACHE" 2>/dev/null)" = "$sess_key" ]; then
-    sess_m=$(sed -n 2p "$SESS_CACHE" 2>/dev/null)
-    cu_line=$(sed -n 3p "$SESS_CACHE" 2>/dev/null)
+  cached_key=""; cached_m=""; cached_line=""
+  [ -f "$SESS_CACHE" ] && { IFS= read -r cached_key; IFS= read -r cached_m; IFS= read -r cached_line; } < "$SESS_CACHE"
+  if [ "$cached_key" = "$sess_key" ]; then
+    sess_m=$cached_m
+    cu_line=$cached_line
   else
-    for cf in $sess_files; do
+    tried=0
+    while IFS= read -r cf && [ "$tried" -lt 3 ]; do   # the three newest logs
+      tried=$((tried + 1))
       cu_line=$(grep '"rate_limits"' "$cf" 2>/dev/null | tail -1)
       [ -n "$cu_line" ] && { sess_m=$(mtime_of "$cf"); break; }
-    done
+    done <<< "$sess_files"
     printf '%s\n%s\n%s\n' "$sess_key" "$sess_m" "$cu_line" > "$SESS_CACHE.tmp" \
       && mv "$SESS_CACHE.tmp" "$SESS_CACHE"
   fi
@@ -219,8 +237,8 @@ if [ -f "$CU_CACHE" ] && [ "$cache_m" -ge "$sess_m" ]; then
   IFS=$'\t' read -r cu_pct cu7_pct cu_reset <<< "$(jq -r "
     .rate_limit | {primary: .primary_window, secondary: .secondary_window} | $CODEX_TSV" "$CU_CACHE" 2>/dev/null)"
 elif [ -n "$cu_line" ]; then
-  IFS=$'\t' read -r cu_pct cu7_pct cu_reset <<< "$(echo "$cu_line" | jq -r "
-    .payload.rate_limits | $CODEX_TSV" 2>/dev/null)"
+  IFS=$'\t' read -r cu_pct cu7_pct cu_reset <<< "$(jq -r "
+    .payload.rate_limits | $CODEX_TSV" <<< "$cu_line" 2>/dev/null)"
 fi
 [ "$cu_pct" = "-" ] && cu_pct=""
 [ "$cu7_pct" = "-" ] && cu7_pct=""
