@@ -22,7 +22,8 @@ Or from a shell:
 curl -fsSL https://raw.githubusercontent.com/zoo3323/usage-statusline/main/install.sh | bash
 ```
 
-macOS, Linux, WSL. `jq` is fetched if it is missing.
+macOS, Linux, WSL. `jq` is fetched if it is missing. Empty boxes where the logos
+should be? The font lacks the glyphs: see [Your choice](#your-choice).
 
 ## Reading it
 
@@ -68,7 +69,8 @@ light=on
 
 The icons need a terminal font with Nerd Fonts 3.5 glyphs. Ghostty 1.3 bundles 3.4:
 install *Symbols Nerd Font* and add
-`font-codepoint-map = U+EC81-U+EC82=Symbols Nerd Font`.
+`font-codepoint-map = U+EC81-U+EC82=Symbols Nerd Font`. Without such a font,
+`icons=off` in the config spells the labels out.
 
 ## More
 
@@ -84,3 +86,5 @@ install *Symbols Nerd Font* and add
 `src/` holds the scripts and `./build.sh` generates `install.sh` from them.
 `./test.sh` runs the tests, `tools/render-assets.sh` redraws the images,
 `claude plugin validate .` checks the plugin.
+
+[MIT](LICENSE)

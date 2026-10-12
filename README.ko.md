@@ -22,7 +22,8 @@ Claude Code 안에서:
 curl -fsSL https://raw.githubusercontent.com/zoo3323/usage-statusline/main/install.sh | bash
 ```
 
-macOS, Linux, WSL에서 동작합니다. `jq`가 없으면 받아옵니다.
+macOS, Linux, WSL에서 동작합니다. `jq`가 없으면 받아옵니다. 로고 자리에 빈 상자가
+보이면 글꼴에 글리프가 없는 것입니다. [표시 항목 고르기](#표시-항목-고르기)를 보세요.
 
 ## 읽는 법
 
@@ -68,7 +69,8 @@ light=on
 
 아이콘은 Nerd Fonts 3.5 글리프가 있는 터미널 글꼴이 필요합니다. Ghostty 1.3은
 3.4를 내장하므로 *Symbols Nerd Font*를 설치하고
-`font-codepoint-map = U+EC81-U+EC82=Symbols Nerd Font`를 추가합니다.
+`font-codepoint-map = U+EC81-U+EC82=Symbols Nerd Font`를 추가합니다. 그런 글꼴이
+없으면 설정에 `icons=off`를 적어 글자 라벨로 바꿉니다.
 
 ## 그 밖에
 
@@ -84,3 +86,5 @@ light=on
 스크립트는 `src/`에 있고 `./build.sh`가 `install.sh`를 만듭니다. `./test.sh`로
 테스트하고, `tools/render-assets.sh`로 이미지를 다시 그리고,
 `claude plugin validate .`로 플러그인을 검사합니다.
+
+[MIT](LICENSE)
