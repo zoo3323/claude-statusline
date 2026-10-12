@@ -131,7 +131,9 @@ prune_settings_backups() {
 }
 
 # Merge the statusLine into settings.json (existing settings are preserved; a
-# timestamped backup is written first). Versions before 1.1.0 also registered
+# timestamped backup is written first). It is re-run every second: that is the
+# pace of the lights on a gauge in use, and a session in which nothing changed
+# answers such a tick by replaying its last line, without spawning anything. Versions before 1.1.0 also registered
 # Codex in-flight hooks for a run-state segment the status line no longer
 # draws — strip those on upgrade, the hook script is gone.
 merge_settings() {
@@ -139,7 +141,7 @@ merge_settings() {
   cp "$SETTINGS" "$SETTINGS.bak.$(date +%Y%m%d%H%M%S)"
   prune_settings_backups
   jq '
-    .statusLine = {type: "command", command: "~/.claude/scripts/statusline-codex.sh", refreshInterval: 2}
+    .statusLine = {type: "command", command: "~/.claude/scripts/statusline-codex.sh", refreshInterval: 1}
     | (if .hooks then
          .hooks |= with_entries(.value |= map(select(.matcher != "mcp__codex__codex|mcp__codex__codex-reply")))
        else . end)
@@ -147,12 +149,13 @@ merge_settings() {
 }
 
 # Leftovers from earlier versions: the hook script and its per-session
-# counter/lock files (before 1.1.0), and the per-session payload dumps the very
-# first status line wrote on every render (*.state.json).
+# counter/lock files (before 1.1.0), the per-session payload dumps the very
+# first status line wrote on every render (*.state.json), and the session-log
+# cache in the format used before 1.2.0.
 remove_legacy_files() {
   rm -f "$SCRIPTS_DIR/codex-status-set.sh" "$STATE_DIR"/*.count \
         "$STATE_DIR"/claude-usage.last "$STATE_DIR"/codex-usage.last \
-        "$STATE_DIR"/*.state.json
+        "$STATE_DIR"/*.state.json "$STATE_DIR"/codex-sess.cache
   rm -rf "$STATE_DIR"/*.lock
 }
 

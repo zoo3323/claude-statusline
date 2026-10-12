@@ -92,4 +92,4 @@ printf '%s' "$out" | jq '
   def window: if .utilization == null then null
               else {used_percentage: (.utilization | floor), resets_at: (.resets_at | epoch)} end;
   {fetched_at: (now | floor), five_hour: (.five_hour | window), seven_day: (.seven_day | window)}
-' > "$CACHE.tmp" 2>/dev/null && mv "$CACHE.tmp" "$CACHE" || rm -f "$CACHE.tmp"
+' > "$CACHE.tmp.$$" 2>/dev/null && mv "$CACHE.tmp.$$" "$CACHE" || rm -f "$CACHE.tmp.$$"

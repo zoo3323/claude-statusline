@@ -49,5 +49,5 @@ out=$(curl -s --max-time 8 \
 
 # Replace the cache only on a valid response (atomic write)
 if printf '%s' "$out" | jq -e '.rate_limit.primary_window.used_percent' >/dev/null 2>&1; then
-  printf '%s' "$out" > "$CACHE.tmp" && mv "$CACHE.tmp" "$CACHE"
+  printf '%s' "$out" > "$CACHE.tmp.$$" && mv "$CACHE.tmp.$$" "$CACHE"
 fi

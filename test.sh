@@ -1,7 +1,8 @@
 #!/bin/bash
 # Regression tests. Runs the scripts in src/ against a throwaway $HOME with curl
-# stubbed out, and checks what the status line draws, what it saves for the
-# other sessions, and when the refresh scripts go to the network.
+# stubbed out, and checks what the status line draws, how it fits a narrow
+# terminal, when it replays the previous line instead of rendering, what it
+# saves for the other sessions, and when the refresh scripts go to the network.
 #
 #   ./test.sh
 cd "$(dirname "$0")" || exit 1
@@ -9,6 +10,8 @@ cd "$(dirname "$0")" || exit 1
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 export HOME="$T/home"
+unset COLUMNS         # no width: gauges at their default, nothing cut
+unset CLAUDE_EFFORT   # the fallback for a payload without an effort level
 SCRIPTS="$HOME/.claude/scripts"
 STATE="$HOME/.claude/codex-status"
 LOGS="$HOME/.codex/sessions/2026/01/01"
@@ -27,6 +30,13 @@ EOF
 printf '#!/bin/bash\nexit 1\n' > "$HOME/.local/bin/security"
 chmod +x "$HOME/.local/bin/curl" "$HOME/.local/bin/security"
 echo '{"claudeAiOauth":{"accessToken":"test","expiresAt":0}}' > "$HOME/.claude/.credentials.json"
+
+# jq, counted: a replayed line must not have needed it.
+mkdir -p "$T/bin"
+printf '#!/bin/bash\necho run >> "%s/jq.log"\nexec "%s" "$@"\n' "$T" "$(command -v jq)" > "$T/bin/jq"
+chmod +x "$T/bin/jq"
+PATH="$T/bin:$PATH"
+jq_runs() { local n; n=$(wc -l < "$T/jq.log" 2>/dev/null); echo $((n + 0)); }
 echo '{"tokens":{"access_token":"test","account_id":"test"}}' > "$HOME/.codex/auth.json"
 
 now=$(date +%s)
@@ -56,7 +66,19 @@ iso() { date -u -r "$1" +%Y-%m-%dT%H:%M:%S 2>/dev/null || date -u -d "@$1" +%Y-%
 at() { local year=$1; shift; touch -t "${year}01010000" "$@"; }       # give files an old date
 untouched() { [ -n "$(find "$1" -mmin +1440 2>/dev/null)" ]; }         # …and see whether they kept it
 fetched() { grep -q "$1" "$HOME/curl.log" 2>/dev/null; }
-reset_state() { rm -f "$STATE"/* "$LOGS"/* "$HOME"/*.jsonl "$HOME/curl.log"; }
+reset_state() {
+  rm -f "$STATE"/* "$LOGS"/* "$HOME"/*.jsonl "$HOME/curl.log"
+  rm -rf "$HOME/.claude/sessions" "$HOME/.claude/tasks"
+}
+raw() { # stdin: payload -> the line as it is written, colour codes and all
+  touch "$STATE/usage.last"
+  "$SCRIPTS/statusline-codex.sh"
+}
+status() { # $1=session $2=busy|idle [$3=pid] -> the only status file there is: the one Claude Code
+           # keeps for that session, named after its pid (default: a pid that is alive, ours)
+  rm -rf "$HOME/.claude/sessions"; mkdir -p "$HOME/.claude/sessions"
+  printf '{"pid":%s,"sessionId":"%s","status":"%s"}' "${3:-$$}" "$1" "$2" > "$HOME/.claude/sessions/${3:-$$}.json"
+}
 
 pass=0; fail=0
 check() { # $1=what is expected, the rest=a command that must succeed
@@ -71,7 +93,7 @@ not() { ! "$@"; }
 # --- what the status line saves for the other sessions -----------------------
 reset_state
 out=$(payload a 6 "$soon" 34 "$week" | render)
-check "draws the gauge from its own payload"                 has "$out" "claude ▕▆▆▆▆▆▆▆▆▆▆▆▆▆░▏94%"
+check "draws the gauge from its own payload"                 has "$out" "claude ▕▆▆▆▆▆▆▆▆▆░▏94%"
 check "saves a payload that carries news"                    is "$(saved)" "a 6 34"
 
 at 2020 "$STATE/claude-last-input.json"
@@ -148,8 +170,179 @@ echo '{"payload":{"rate_limits":{"primary":{"used_percent":25,"resets_at":'"$wee
 check "codex background: no poll right after a codex call"   not fetched chatgpt
 "$SCRIPTS/codex-usage-refresh.sh"
 check "codex manual: polls regardless"                       fetched chatgpt
+
+: > "$STATE/render.gone"; at 2020 "$STATE/render.gone"
+: > "$STATE/render.live"
+"$SCRIPTS/usage-refresh.sh" 300
+check "the refresh sweeps the replay files of dead sessions" not test -e "$STATE/render.gone"
+check "… and leaves those of live ones"                      test -e "$STATE/render.live"
+
 out=$(payload a 6 "$soon" 34 "$week" | render)
-check "the codex gauge is drawn from the poll"               has "$out" "codex ▕███████████░░░▏82%"
+check "the codex gauge is drawn from the poll"               has "$out" "codex ▕████████░░▏82%"
+
+# --- the labels: words, or icons with the marker file ------------------------
+ctx() { # $1=context used% -> the line
+  payload a 6 "$soon" 34 "$week" | jq -c --argjson used "$1" '.context_window.used_percentage = $used' | render
+}
+check "the context gauge fills up as it is used"             has "$(ctx 12)" "ctx ▕█░░░░░░░░░▏12%"
+check "… empty when nothing is used"                         has "$(ctx 0)" "ctx ▕░░░░░░░░░░▏0%"
+check "… half way at 50%"                                    has "$(ctx 50)" "ctx ▕█████░░░░░▏50%"
+check "… not drawn full until it is"                         has "$(ctx 97)" "ctx ▕█████████░▏97%"
+check "… full at 100%"                                       has "$(ctx 100)" "ctx ▕██████████▏100%"
+check "… and no wider past it"                               has "$(ctx 140)" "ctx ▕██████████▏140%"
+
+: > "$STATE/icons"
+out=$(ctx 12)
+check "with the marker file the codex label is the logo"     has "$out" $'\xee\xb2\x81 ▕████████░░▏82%'
+check "… and so is the claude one"                           has "$out" $'\xee\xb2\x82 ▕▆'
+check "… with the word codex gone"                           lacks "$out" "codex"
+check "… and the word claude"                                lacks "$out" "claude"
+check "… and ctx is the speech bubble"                       has "$out" $'\xf3\xb0\x8d\xaa ▕█░░░░░░░░░▏12%'
+check "… with the word ctx gone"                             lacks "$out" "ctx"
+rm -f "$STATE/icons"
+check "without it the words are back"                        has "$(ctx 12)" "codex ▕"
+
+# --- fitting the terminal ----------------------------------------------------
+# (codex has 82% left and claude 94%, as above)
+wide() { COLUMNS=$1 ctx 12; }
+check "a wide terminal gets wider gauges"                    has "$(wide 200)" "codex ▕███████████░░░▏82%"
+check "a narrower one narrower gauges"                       has "$(wide 100)" "codex ▕███████░▏82%"
+out=$(wide 80)
+check "too narrow for gauges: only the numbers"              has "$out" "claude 92% ↻"
+check "… the context one too"                                has "$out" "ctx 12%"
+check "… and no gauge at all"                                lacks "$out" "▕"
+check "narrower still: the countdowns go"                    has "$(wide 60)" "codex 82% · claude 92% · ctx 12%"
+
+mkdir -p "$HOME/.claude/tasks/a"
+echo '{"status":"completed","subject":"done before"}' > "$HOME/.claude/tasks/a/1.json"
+echo '{"status":"in_progress","subject":"s","activeForm":"Reticulating the splines"}' > "$HOME/.claude/tasks/a/2.json"
+check "the task in progress closes the line"                 has "$(ctx 12)" "▏12% · ▸ Reticulating the splines"
+out=$(wide 140)
+check "with room to spare it leaves the gauges alone"        has "$out" "codex ▕██████████░░▏82%"
+check "…"                                                    has "$out" "▸ Reticulating the splines"
+out=$(wide 120)
+check "short of room the gauges give way to it"              has "$out" "codex ▕█████░▏82%"
+check "…"                                                    has "$out" "▸ Reticulating the splines"
+out=$(wide 110)
+check "… but not below their minimum"                        has "$out" "codex ▕████░▏82%"
+check "… then the task is cut instead"                       has "$out" "▸ Reticulating the"
+check "…"                                                    lacks "$out" "splines"
+check "and left out when hardly any of it would fit"         lacks "$(wide 70)" "▸"
+
+# --- a gauge in use ----------------------------------------------------------
+reset_state
+printf '%s\n' '{"type":"event_msg","payload":{"type":"task_started"}}' \
+  '{"type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":25,"resets_at":'"$week"'}}}}' \
+  > "$LOGS/rollout-1.jsonl"
+lit() { # $1=part of a raw line -> success when a light is on it: a shade that is not one of the two themes
+  local s=${1//"[38;2;16;163;127m"/}; s=${s//"[38;2;217;119;87m"/}
+  has "$s" "[38;2;"
+}
+# Where a running light is follows the session's clock: 7 seconds in, it is on cell 6, having come in
+# on the right. Every draw differs in its context figure, so that none of them is a replay of the one
+# before.
+draws=0
+draw() { # [$1=the session's clock in ms]
+  draws=$((draws + 1))
+  out=$(payload a 6 "$soon" 34 "$week" | jq -c --argjson ms "${1:-7000}" --argjson n "$draws" \
+    '.cost.total_duration_ms = $ms | .context_window.used_percentage = $n' | raw)
+  codex_part=${out%%claude*}; claude_part=${out##*claude}; claude_part=${claude_part%%ctx*}
+}
+part() { case "$1" in codex) printf '%s' "$codex_part" ;; *) printf '%s' "$claude_part" ;; esac; }
+still() { # $1=codex|claude -> success when that gauge looks the same from one second to the next
+  local before
+  draw 7000; before=$(part "$1")
+  draw 8000; [ "$(part "$1")" = "$before" ]
+}
+draw
+check "the codex gauge is drawn from the session log"        has "$(sed -E $'s/\x1b\\[[0-9;]*m//g' <<< "$out")" "codex ▕████████░░▏75%"
+check "a running codex task makes the codex gauge glow"      lit "$codex_part"
+check "… a glow that does not move"                          still codex
+check "… and leaves the claude gauge dark"                   not lit "$claude_part"
+status a idle; draw
+check "an idle session does not light the claude gauge"      not lit "$claude_part"
+status b busy; draw
+check "another session at work makes it glow"                lit "$claude_part"
+check "… and nothing moves in this one"                      still claude
+status b busy 99999999; draw
+check "… unless it is gone and only left its file behind"    not lit "$claude_part"
+status a busy; draw
+check "this session at work: a light on the claude gauge"    lit "$claude_part"
+seen=$claude_part
+check "… that runs along it"                                 not still claude
+check "… as does the one on the codex gauge"                 not still codex
+draw 17000
+check "… and comes round every ten seconds"                  is "$claude_part" "$seen"
+echo '{"type":"event_msg","payload":{"type":"task_complete"}}' >> "$LOGS/rollout-1.jsonl"
+draw
+check "the codex light goes out when the task is done"       not lit "$codex_part"
+check "… while claude's stays on"                            lit "$claude_part"
+
+# --- replaying the previous line ---------------------------------------------
+reset_state
+status a idle
+tick() { # $1=the session's clock in ms  $2=context used% -> payload (no 5-hour window: nothing counts down)
+  payload a - - 34 "$week" | jq -c --argjson ms "$1" --argjson used "${2:-12}" \
+    '.cost.total_duration_ms = $ms | .context_window.used_percentage = $used'
+}
+settle() { # $1=clock: render, with the usage files older than the render
+  at 2020 "$STATE"/*.json 2>/dev/null
+  tick "$1" "$2" | raw
+}
+replayed() { # $1=payload -> success when drawing it took no jq; the line is left in $line
+  local before; before=$(jq_runs)
+  line=$(raw <<< "$1")
+  [ "$(jq_runs)" = "$before" ]
+}
+tick 1000 | raw >/dev/null
+first=$(settle 1000)
+p=$(tick 3000)
+check "an idle session's next render is a replay"            replayed "$p"
+check "… of the very same line"                              is "$line" "$first"
+p=$(tick 70000)
+check "… for a minute at most"                               not replayed "$p"
+p=$(tick 71000 13)
+check "not when the payload says something new"              not replayed "$p"
+check "… which is then drawn"                                has "$line" "13%"
+p=$(tick 72000 13)
+check "(and that one is replayed in turn)"                   replayed "$p"
+resized() { COLUMNS=90 replayed "$1"; }
+check "not when the terminal changed width"                  not resized "$p"
+settle 72000 13 >/dev/null
+: > "$STATE/claude-usage.json"
+check "not when a usage file was written since"              not replayed "$p"
+settle 72000 13 >/dev/null
+: > "$STATE/icons"
+check "not when the icons were switched on"                  not replayed "$p"
+rm -f "$STATE/icons"; settle 72000 13 >/dev/null
+status b busy
+check "a session at work somewhere does not end the replay"  replayed "$p"
+
+p=$(payload a 6 "$soon" 34 "$week" | jq -c '.cost.total_duration_ms = 5000')   # with a claude gauge
+raw <<< "$p" >/dev/null; at 2020 "$STATE"/*.json; raw <<< "$p" >/dev/null
+check "… the glow is put on the replayed line"               replayed "$p"
+check "…"                                                    lit "$line"
+status a busy
+check "… or the running light, when it is this session"      replayed "$p"
+check "…"                                                    lit "$line"
+status a idle
+check "… and taken off it again"                             replayed "$p"
+check "…"                                                    not lit "$line"
+
+# --- several sessions at once ------------------------------------------------
+# (they share the saved payload and the codex log cache; a temporary file under one name for all of
+# them used to be renamed away from under whoever came second)
+reset_state
+echo '{"type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":25,"resets_at":'"$week"'}}}}' > "$LOGS/rollout-1.jsonl"
+touch "$STATE/usage.last"
+for n in 1 2 3 4 5 6 7 8; do
+  payload "s$n" "$n" "$soon" 34 "$week" | "$SCRIPTS/statusline-codex.sh" > "$T/par.$n.out" 2> "$T/par.$n.err" &
+done
+wait
+check "renders running side by side do not trip each other" is "$(cat "$T"/par.*.err)" ""
+check "… each draws its line"                                is "$(grep -l 'codex' "$T"/par.*.out | wc -l | tr -d ' ')" "8"
+check "… the saved payload is one of theirs, whole"          has "$(jq -r '.session_id' "$STATE/claude-last-input.json" 2>/dev/null)" "s"
+check "… and no temporary file is left behind"               is "$(find "$STATE" -name '*tmp*' | wc -l | tr -d ' ')" "0"
 
 # --- the status line's own trigger -------------------------------------------
 reset_state
@@ -162,6 +355,10 @@ done
 check "a mark older than 5 minutes kicks off the codex poll" fetched chatgpt
 check "… and the claude poll"                                fetched anthropic
 check "… and is reset so the next render does not"           not untouched "$STATE/usage.last"
+for _ in 1 2 3 4 5 6 7 8 9 10; do   # let the poll finish writing before the directory goes
+  [ -f "$STATE/claude-usage.json" ] && break
+  sleep 0.2
+done
 
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
