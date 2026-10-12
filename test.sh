@@ -3,12 +3,17 @@
 # stubbed out, and checks what the status line draws, how it fits a narrow
 # terminal, when it replays the previous line instead of rendering, what it
 # saves for the other sessions, and when the refresh scripts go to the network.
+# The last part runs the generated installer, with its options, in homes of its own.
 #
 #   ./test.sh
 cd "$(dirname "$0")" || exit 1
 
 T=$(mktemp -d)
-trap 'rm -rf "$T"' EXIT
+# A process to stand in for a live Claude Code: session status files are only believed when their
+# pid is alive and, where /proc can tell, is called claude.
+(exec -a claude sleep 900) & CLAUDE_PID=$!
+disown
+trap 'kill "$CLAUDE_PID" 2>/dev/null; rm -rf "$T"' EXIT
 export HOME="$T/home"
 unset COLUMNS         # no width: gauges at their default, nothing cut
 unset CLAUDE_EFFORT   # the fallback for a payload without an effort level
@@ -75,9 +80,9 @@ raw() { # stdin: payload -> the line as it is written, colour codes and all
   "$SCRIPTS/statusline-codex.sh"
 }
 status() { # $1=session $2=busy|idle [$3=pid] -> the only status file there is: the one Claude Code
-           # keeps for that session, named after its pid (default: a pid that is alive, ours)
+           # keeps for that session, named after its pid (default: the stand-in above)
   rm -rf "$HOME/.claude/sessions"; mkdir -p "$HOME/.claude/sessions"
-  printf '{"pid":%s,"sessionId":"%s","status":"%s"}' "${3:-$$}" "$1" "$2" > "$HOME/.claude/sessions/${3:-$$}.json"
+  printf '{"pid":%s,"sessionId":"%s","status":"%s"}' "${3:-$CLAUDE_PID}" "$1" "$2" > "$HOME/.claude/sessions/${3:-$CLAUDE_PID}.json"
 }
 
 pass=0; fail=0
@@ -266,6 +271,10 @@ check "another session at work makes it glow"                lit "$claude_part"
 check "… and nothing moves in this one"                      still claude
 status b busy 99999999; draw
 check "… unless it is gone and only left its file behind"    not lit "$claude_part"
+if [ -r "/proc/$$/cmdline" ]; then   # only Linux can tell whose pid it is
+  status b busy $$; draw
+  check "… or its pid belongs to something else by now"      not lit "$claude_part"
+fi
 status a busy; draw
 check "this session at work: a light on the claude gauge"    lit "$claude_part"
 seen=$claude_part
@@ -335,14 +344,47 @@ check "…"                                                    not lit "$line"
 reset_state
 echo '{"type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":25,"resets_at":'"$week"'}}}}' > "$LOGS/rollout-1.jsonl"
 touch "$STATE/usage.last"
+renders=()
 for n in 1 2 3 4 5 6 7 8; do
   payload "s$n" "$n" "$soon" 34 "$week" | "$SCRIPTS/statusline-codex.sh" > "$T/par.$n.out" 2> "$T/par.$n.err" &
+  renders[${#renders[@]}]=$!
 done
-wait
+wait "${renders[@]}"   # not a bare wait: the stand-in for Claude Code is still running
 check "renders running side by side do not trip each other" is "$(cat "$T"/par.*.err)" ""
 check "… each draws its line"                                is "$(grep -l 'codex' "$T"/par.*.out | wc -l | tr -d ' ')" "8"
 check "… the saved payload is one of theirs, whole"          has "$(jq -r '.session_id' "$STATE/claude-last-input.json" 2>/dev/null)" "s"
 check "… and no temporary file is left behind"               is "$(find "$STATE" -name '*tmp*' | wc -l | tr -d ' ')" "0"
+
+# --- choosing what is shown --------------------------------------------------
+reset_state
+printf '{"rate_limit":{"primary_window":{"used_percent":18,"reset_at":%s}}}' "$week" > "$STATE/codex-usage.json"
+conf() { printf '%s\n' "$@" > "$STATE/config"; }
+shows() { payload a 6 "$soon" 34 "$week" | jq -c '.context_window.used_percentage = 12 | .effort.level = "max"' | render; }
+out=$(shows)
+check "without a config everything is shown"                 has "$out" "proj · Opus 5.5 (max) · codex ▕████████░░▏82% ↻"
+check "…"                                                    has "$out" "· ctx ▕█░░░░░░░░░▏12%"
+conf "show=folder ctx"
+check "the config names the segments to show"                is "$(shows)" "proj · ctx ▕█░░░░░░░░░▏12%"
+conf "show=claude"
+out=$(shows)
+check "a single segment stands without a separator"          is "${out%%▕*}" "claude "
+check "…"                                                    lacks "$out" " · "
+conf "show=folder model codex claude ctx task" "countdown=off"
+out=$(shows)
+check "countdown=off drops the times until a reset"          lacks "$out" "↻"
+check "… and nothing else"                                   has "$out" "codex ▕████████░░▏82% · claude ▕"
+conf "icons=on"
+check "icons=on does what the marker file of 1.2 did"        has "$(shows)" $'\xee\xb2\x82 ▕'
+status a busy
+conf "light=off"
+check "light=off: no light, whoever is at work"              not lit "$(payload a 6 "$soon" 34 "$week" | raw)"
+rm -f "$STATE/config"; rm -rf "$HOME/.claude/sessions"
+tick 1000 >/dev/null; settle 1000 >/dev/null; p=$(tick 2000)
+check "(a line that is being replayed …)"                    replayed "$p"
+conf "show=folder"
+check "… is drawn anew once the config changes"              not replayed "$p"
+check "…"                                                    is "$(sed -E $'s/\x1b\\[[0-9;]*m//g' <<< "$line")" "proj"
+rm -f "$STATE/config"
 
 # --- the status line's own trigger -------------------------------------------
 reset_state
@@ -359,6 +401,48 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do   # let the poll finish writing before the dir
   [ -f "$STATE/claude-usage.json" ] && break
   sleep 0.2
 done
+
+# --- the installer and its options -------------------------------------------
+I="$PWD/install-claude-statusline.sh"
+quiet() { "$@" > /dev/null 2>&1; }
+check "the generated installer is up to date"                quiet ./build.sh --check
+install_in() { local h=$1; shift; ( export HOME="$T/$h"; mkdir -p "$HOME/.claude"; bash "$I" "$@" ) > "$T/$h.out" 2>&1; }
+conf_of() { tr '\n' '|' < "$T/$1/.claude/codex-status/config" 2>/dev/null; }
+
+install_in h1
+check "a plain install sets the status line"                 has "$(jq -r '.statusLine.command' "$T/h1/.claude/settings.json")" "/.claude/scripts/statusline-codex.sh"
+check "… brings the stand-alone /refresh skill"              test -f "$T/h1/.claude/skills/refresh/SKILL.md"
+check "… and writes no config: there is nothing to record"   not test -e "$T/h1/.claude/codex-status/config"
+
+install_in h2 --plugin --show "folder claude ctx" --countdown off --icons on --light off
+check "options record what to show"                          is "$(conf_of h2)" "show=folder claude ctx|countdown=off|icons=on|light=off|"
+check "the plugin leaves the stand-alone skill out"          not test -e "$T/h2/.claude/skills/refresh"
+install_in h2 --plugin --icons off
+check "an option left out keeps its value"                   is "$(conf_of h2)" "show=folder claude ctx|countdown=off|icons=off|light=off|"
+
+install_in h3 --show "folder weather"; rc=$?
+check "an unknown segment is refused"                        is "$rc" "2"
+check "… before anything is installed"                       not test -e "$T/h3/.claude/scripts"
+
+mkdir -p "$T/h4/.claude/codex-status"; : > "$T/h4/.claude/codex-status/icons"
+install_in h4
+check "the icons marker of 1.2 becomes a config line"        is "$(conf_of h4)" "show=folder model codex claude ctx task|countdown=on|icons=on|light=on|"
+check "… and is gone"                                        not test -e "$T/h4/.claude/codex-status/icons"
+
+install_in h5 --plugin --sync
+check "--sync sets nothing up where nothing was"             not test -e "$T/h5/.claude/scripts"
+
+echo 0.0.1 > "$T/h2/.claude/codex-status/installed-version"
+echo "# an older version" > "$T/h2/.claude/scripts/statusline-codex.sh"
+jq 'del(.statusLine)' "$T/h2/.claude/settings.json" > "$T/h2.settings" && mv "$T/h2.settings" "$T/h2/.claude/settings.json"
+install_in h2 --plugin --sync
+check "--sync brings an older installation up to date"       cmp -s src/statusline-codex.sh "$T/h2/.claude/scripts/statusline-codex.sh"
+check "… says so in installed-version"                       is "$(cat "$T/h2/.claude/codex-status/installed-version")" "$(cat VERSION)"
+check "… keeps the choices"                                  is "$(conf_of h2)" "show=folder claude ctx|countdown=off|icons=off|light=off|"
+check "… and leaves settings.json alone"                     is "$(jq -r '.statusLine // "none"' "$T/h2/.claude/settings.json")" "none"
+echo "# edited by hand" > "$T/h2/.claude/scripts/statusline-codex.sh"
+install_in h2 --plugin --sync
+check "--sync does nothing when the version is the same"     is "$(cat "$T/h2/.claude/scripts/statusline-codex.sh")" "# edited by hand"
 
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

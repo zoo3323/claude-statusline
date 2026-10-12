@@ -1,6 +1,8 @@
 #!/bin/bash
 # Installer for the Claude Code status line.
 #   curl -fsSL https://raw.githubusercontent.com/zoo3323/claude-statusline/main/install-claude-statusline.sh | bash
+# Options go after `bash -s --`; see usage() below. The plugin's setup skill runs
+# this same file.
 #
 # GENERATED FILE — do not edit. The scripts it writes live in src/; change them
 # there and run ./build.sh.
@@ -18,6 +20,51 @@ STATE_DIR="$CLAUDE_DIR/codex-status"
 SKILLS_DIR="$CLAUDE_DIR/skills/refresh"
 SETTINGS="$CLAUDE_DIR/settings.json"
 LOCAL_BIN="$HOME/.local/bin"
+
+usage() {
+  cat <<'EOF'
+Usage: install-claude-statusline.sh [options]
+
+What the status line shows (kept from the last time when left out):
+  --show "<segments>"   any of: folder model codex claude ctx task
+  --countdown on|off    the time until a usage window resets
+  --icons on|off        icons instead of the words codex, claude and ctx
+                        (the terminal's font needs Nerd Fonts 3.5 glyphs)
+  --light on|off        the light and the glow on a quota that is in use
+
+  --plugin              run from the Claude Code plugin: leave the stand-alone
+                        /refresh skill out, the plugin brings its own
+  --sync                only bring an existing installation up to this version;
+                        installs nothing new and leaves settings.json alone
+EOF
+}
+
+PLUGIN=""; SYNC=""; OPT_SHOW=""; OPT_COUNTDOWN=""; OPT_ICONS=""; OPT_LIGHT=""
+parse_args() {
+  local s
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --show)
+        OPT_SHOW=$2
+        [ -n "$OPT_SHOW" ] || { echo "❌ --show needs at least one segment"; return 2; }
+        for s in $OPT_SHOW; do
+          case "$s" in folder|model|codex|claude|ctx|task) ;;
+            *) echo "❌ --show: unknown segment '$s'"; return 2 ;;
+          esac
+        done
+        shift ;;
+      --countdown|--icons|--light)
+        case "$2" in on|off) ;; *) echo "❌ $1 takes on or off"; return 2 ;; esac
+        case "$1" in --countdown) OPT_COUNTDOWN=$2 ;; --icons) OPT_ICONS=$2 ;; --light) OPT_LIGHT=$2 ;; esac
+        shift ;;
+      --plugin) PLUGIN=1 ;;
+      --sync)   SYNC=1 ;;
+      -h|--help) usage; exit 0 ;;
+      *) echo "❌ Unknown option: $1"; usage; return 2 ;;
+    esac
+    shift
+  done
+}
 
 verify_sha256() { # $1=file $2=expected hex digest
   local got
@@ -99,9 +146,61 @@ chmod +x "$SCRIPTS_DIR/claude-usage-refresh.sh"
 @@EMBED "$SCRIPTS_DIR/usage-refresh.sh" src/usage-refresh.sh
 chmod +x "$SCRIPTS_DIR/usage-refresh.sh"
 
-# refresh skill, so /refresh works from any session
+# refresh skill, so /refresh works from any session (the plugin has its own)
+if [ -z "$PLUGIN" ]; then
 mkdir -p "$SKILLS_DIR"
-@@EMBED "$SKILLS_DIR/SKILL.md" src/skills/refresh/SKILL.md
+@@EMBED "$SKILLS_DIR/SKILL.md" skills/refresh/SKILL.md
+fi
+}
+
+# What the status line shows — ~/.claude/codex-status/config, see "What to draw"
+# in statusline-codex.sh. The file is only written when there is a choice to
+# record: an option given here, or the marker file with which 1.2 switched the
+# icons on, which this file replaces.
+write_config() {
+  local cfg="$STATE_DIR/config" show="" countdown="" icons="" light="" k v write=""
+  if [ -f "$cfg" ]; then
+    while IFS='=' read -r k v || [ -n "$k" ]; do
+      case "$k" in show) show=$v ;; countdown) countdown=$v ;; icons) icons=$v ;; light) light=$v ;; esac
+    done < "$cfg"
+  fi
+  if [ -e "$STATE_DIR/icons" ]; then
+    [ -n "$icons" ] || icons=on
+    rm -f "$STATE_DIR/icons"; write=1
+  fi
+  [ -n "$OPT_SHOW" ] && { show=$OPT_SHOW; write=1; }
+  [ -n "$OPT_COUNTDOWN" ] && { countdown=$OPT_COUNTDOWN; write=1; }
+  [ -n "$OPT_ICONS" ] && { icons=$OPT_ICONS; write=1; }
+  [ -n "$OPT_LIGHT" ] && { light=$OPT_LIGHT; write=1; }
+  [ -n "$write" ] || return 0
+  printf 'show=%s\ncountdown=%s\nicons=%s\nlight=%s\n' \
+    "${show:-folder model codex claude ctx task}" "${countdown:-on}" "${icons:-off}" "${light:-on}" > "$cfg.tmp.$$" \
+    && mv "$cfg.tmp.$$" "$cfg"
+}
+
+newer_version() { # is $1 a later version than $2?
+  local a b i
+  IFS=. read -r -a a <<< "$1"
+  IFS=. read -r -a b <<< "$2"
+  for i in 0 1 2; do
+    [ "${a[i]:-0}" -gt "${b[i]:-0}" ] 2>/dev/null && return 0
+    [ "${a[i]:-0}" -lt "${b[i]:-0}" ] 2>/dev/null && return 1
+  done
+  return 1
+}
+
+# --sync, which the plugin runs when a session starts: an installation the setup
+# skill made follows the plugin's version. Where nothing was set up, nothing is.
+sync_installed() {
+  local have
+  [ -f "$STATE_DIR/installed-version" ] || return 0
+  have=$(cat "$STATE_DIR/installed-version")
+  newer_version "$VERSION" "$have" || return 0
+  write_files
+  link_cu_refresh
+  write_config
+  remove_legacy_files
+  printf '%s\n' "$VERSION" > "$STATE_DIR/installed-version"
 }
 
 # cu-refresh as a symlink on PATH instead of a shell alias, so no rc file has to
@@ -160,18 +259,30 @@ remove_legacy_files() {
 }
 
 main() {
+  parse_args "$@" || exit 2
+  if [ -n "$SYNC" ]; then
+    sync_installed
+    return 0
+  fi
   mkdir -p "$SCRIPTS_DIR" "$STATE_DIR"
   ensure_jq
   ensure_local_bin_on_path
   write_files
   link_cu_refresh
   merge_settings
+  write_config
   remove_legacy_files
   printf '%s\n' "$VERSION" > "$STATE_DIR/installed-version"
 
   echo "✅ Installed claude-statusline $VERSION"
-  echo "   - Status line: restart Claude Code and it appears at the bottom"
-  echo "   - Refresh usage now: cu-refresh in a terminal, /refresh inside Claude Code"
+  echo "   - Status line: it appears at the bottom, in a new session at the latest"
+  if [ -n "$PLUGIN" ]; then
+    echo "   - Refresh usage now: cu-refresh in a terminal, /usage-statusline:refresh inside Claude Code"
+    echo "   - Change what it shows: /usage-statusline:setup"
+  else
+    echo "   - Refresh usage now: cu-refresh in a terminal, /refresh inside Claude Code"
+    echo "   - Change what it shows: run this again with options, see --help"
+  fi
   echo "   - Backup: $SETTINGS.bak.*"
 }
 

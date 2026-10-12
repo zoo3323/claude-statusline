@@ -9,14 +9,49 @@ usage as a percentage, and the task in progress.
 
 ## Install
 
+As a Claude Code plugin — inside Claude Code:
+
+```
+/plugin install usage-statusline --marketplace zoo3323/claude-statusline
+/usage-statusline:setup
+```
+
+The second line switches the status line on and asks what it should show; a
+plugin cannot switch a status line on by itself. On Claude Code before 2.1.275
+the first line is two: `/plugin marketplace add zoo3323/claude-statusline`, then
+`/plugin install usage-statusline@usage-statusline`.
+
+Or with the install script, which is what the plugin runs as well:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zoo3323/claude-statusline/main/install-claude-statusline.sh | bash
 ```
 
-Restart Claude Code and the status line appears. `jq` is fetched into
-`~/.local/bin` if it is missing, no admin rights required. Everything lands in
-`~/.claude/scripts/`, a `/refresh` skill, caches under
+Either way the status line appears at the bottom, in a new session at the
+latest. `jq` is fetched into `~/.local/bin` if it is missing, no admin rights
+required. Everything lands in `~/.claude/scripts/`, caches under
 `~/.claude/codex-status/`, and a `cu-refresh` link in `~/.local/bin`.
+
+## Choosing what it shows
+
+Six segments — `folder`, `model`, `codex`, `claude`, `ctx`, `task` — and three
+switches: the time until a window resets, icons for labels, the light on a quota
+in use. Everything is shown unless you say otherwise:
+
+- with the plugin, run `/usage-statusline:setup` again;
+- with the script, pass options:
+  `… | bash -s -- --show "folder claude ctx" --countdown off`
+  (`--help` lists them; an option you leave out keeps its value).
+
+Both write `~/.claude/codex-status/config`, which you can also edit by hand. A
+change shows within a second:
+
+```
+show=folder model codex claude ctx task
+countdown=on
+icons=off
+light=on
+```
 
 Claude Code re-runs the status line every second in every open session, and
 nothing of it stays in memory in between. While nothing it shows has changed, a
@@ -40,8 +75,8 @@ A gauge whose quota is being spent right now shows it, in every session — the
 quota is the account's, whichever session spends it. The `claude` gauge is in use
 while any Claude Code session on this machine is at work, the `codex` gauge
 while a Codex task is running. In the session that is itself at work a light
-runs along the gauge, from right to left; in the others the end of the bar
-glows, without moving.
+runs along the gauge, from right to left; in the others the bar grows lighter
+towards its end, without moving.
 
 Nothing moves in a session that is not at work, on purpose: a moving light is
 terminal output every second (about 100 bytes), and a connection that keeps
@@ -54,8 +89,8 @@ task in progress takes what is left of the line and is cut to fit.
 
 Usage keeps moving while you are idle — it is polled in the background, not only
 after you prompt. To refresh on the spot: `cu-refresh` in a terminal, `/refresh`
-inside Claude Code. The Codex gauge only appears when the Codex CLI is logged
-in on this machine.
+inside Claude Code (`/usage-statusline:refresh` with the plugin). The Codex gauge
+only appears when the Codex CLI is logged in on this machine.
 
 The poll reuses the OAuth tokens Claude Code and Codex already store on this
 machine to read your account usage. Those are account-info requests: they
@@ -65,16 +100,12 @@ reports.
 
 ## Icons instead of the words
 
-```bash
-touch ~/.claude/codex-status/icons   # delete it to get the words back
-```
-
-From the next render on, the gauges are labelled with the OpenAI and Claude
-logos instead of `codex` and `claude`, and `ctx` becomes a speech bubble. These
-are Nerd Fonts glyphs, and a script cannot tell whether your terminal can draw
-them — hence off by default. What counts is the font of the terminal you are
-sitting at, also when Claude Code runs on another machine over SSH; the marker
-file goes on the machine Claude Code runs on.
+With `icons=on` (the setup skill's "Icons", or `--icons on`) the gauges are
+labelled with the OpenAI and Claude logos instead of `codex` and `claude`, and
+`ctx` becomes a speech bubble. These are Nerd Fonts glyphs, and a script cannot
+tell whether your terminal can draw them — hence off by default. What counts is
+the font of the terminal you are sitting at, also when Claude Code runs on
+another machine over SSH; the setting goes on the machine Claude Code runs on.
 
 The bubble is in any Nerd Fonts 3 font. The two logos (`U+EC81`, `U+EC82`) exist
 only since Nerd Fonts 3.5.0; installing *Symbols Nerd Font* 3.5 or later
@@ -87,11 +118,15 @@ font-codepoint-map = U+EC81-U+EC82=Symbols Nerd Font
 
 ## Uninstall
 
+With the plugin: `/usage-statusline:uninstall`, then `/plugin uninstall
+usage-statusline` for the plugin itself. Otherwise:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zoo3323/claude-statusline/main/uninstall-claude-statusline.sh | bash
 ```
 
-Reverts exactly what the installer touched and leaves everything else alone.
+Either reverts exactly what the installer touched and leaves everything else
+alone.
 
 ## Development
 
@@ -99,3 +134,9 @@ The scripts live in `src/`. `install-claude-statusline.sh` is generated from the
 by `./build.sh` — edit `src/`, not the installer. `./build.sh --check` fails when
 the committed installer is out of date. `./test.sh` runs the scripts against a
 throwaway home directory with the network stubbed out.
+
+The repository is also the plugin: `.claude-plugin/` holds the manifest (its
+version is stamped from `VERSION` by `./build.sh`) and a one-plugin marketplace,
+`skills/` the three skills, `hooks/` the session-start hook that keeps an
+installation made by the setup skill at the plugin's version. `claude plugin
+validate .` checks them.

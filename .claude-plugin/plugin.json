@@ -1,0 +1,19 @@
+{
+  "name": "usage-statusline",
+  "version": "1.3.0",
+  "description": "A status line for Claude Code: Claude and Codex usage gauges that stay live while you are idle, context, the task in progress. Run /usage-statusline:setup to turn it on and choose what it shows.",
+  "author": {
+    "name": "zoo3323"
+  },
+  "homepage": "https://github.com/zoo3323/claude-statusline",
+  "repository": "https://github.com/zoo3323/claude-statusline",
+  "keywords": [
+    "statusline",
+    "status line",
+    "usage",
+    "rate limit",
+    "quota",
+    "codex",
+    "context"
+  ]
+}

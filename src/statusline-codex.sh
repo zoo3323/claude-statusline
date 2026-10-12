@@ -11,6 +11,7 @@
 #     when the codex logs moved; the rest is shell builtins, no subshells
 IFS= read -r -d '' input   # all of stdin
 STATE_DIR="$HOME/.claude/codex-status"
+CONFIG="$STATE_DIR/config"   # what the user chose to show, see "What to draw"
 icons=0; [ -e "$STATE_DIR/icons" ] && icons=1
 
 # Shared palette — explicit 256-colour greys instead of dim (\033[2m), which
@@ -38,9 +39,10 @@ CRIT="${ESC}[38;5;196m"    # 90% used and up
 # Claude's is in use while any session on this machine is at work. Claude Code
 # keeps a status file per live session, named after its pid. That is not a
 # documented interface, so anything unexpected simply means "not in use"; a file
-# left behind by a session that died is told by its pid being gone.
+# left behind by a session that died is told by its pid being gone, or belonging
+# to something else by now.
 claude_use() { # -> claude_mode
-  local f st pid
+  local f st pid arg ours
   claude_mode=""
   for f in "$HOME"/.claude/sessions/*.json; do
     [ -f "$f" ] || continue
@@ -49,6 +51,14 @@ claude_use() { # -> claude_mode
     pid=${f##*/}; pid=${pid%.json}
     case "$pid" in ''|*[!0-9]*) continue ;; esac
     kill -0 "$pid" 2>/dev/null || continue
+    # A pid gets handed out again; where /proc tells, it has to be Claude Code's.
+    if [ -r "/proc/$pid/cmdline" ]; then
+      ours=""
+      while IFS= read -r -d '' arg || [ -n "$arg" ]; do
+        case "$arg" in *claude*) ours=1; break ;; esac
+      done < "/proc/$pid/cmdline"
+      [ -n "$ours" ] || continue
+    fi
     case "$st" in *"\"sessionId\":\"$sid\""*) claude_mode=run; return ;; esac
     claude_mode=glow
   done
@@ -67,7 +77,8 @@ codex_use() { # $1=the verdict -> codex_mode
 # (empty: none) and $5 $6 $7 is the colour as r g b: the cells within two of the
 # light's centre are lightened towards white, the centre the most, and never by
 # much — it is a sheen, not a lamp. $4 is the cell it is centred on, or "tip"
-# for the glow: on the last filled cell, fading into the bar.
+# for the glow: the bar grows lighter towards its end, a little with every cell,
+# so that it reads as a bar that is lit and not as a few cells of another colour.
 #
 # The running light moves LIGHT_STEP cells to the left with every second; there
 # is no moving it more often, Claude Code re-runs the status line once a second
@@ -76,21 +87,21 @@ codex_use() { # $1=the verdict -> codex_mode
 # behind.
 LIGHT_STEP=2
 LIGHT_EVERY=10
+GLOW=35   # how much lighter, in percent towards white, the end of a glowing bar is
 draw_track() { # -> track
   local cells=$1 block=$2 colour=$3 light=$4 round=$((LIGHT_EVERY * LIGHT_STEP)) i ch c d k r g b last="" s=""
   for ((i=0; i<bar_w; i++)); do
     if [ "$i" -lt "$cells" ]; then ch=$block; c=$colour; r=$5; g=$6; b=$7
     else ch="░"; c=$EMPTY; r=88; g=88; b=88; fi
     if [ -n "$light" ]; then
+      k=0
       if [ "$light" = tip ]; then
-        d=$((cells - 1 - i)); [ "$d" -lt 0 ] && d=9
+        [ "$i" -lt "$cells" ] && k=$((GLOW * (i + 1) / cells))
       else
         d=$(( (i - light + round) % round )); [ $((d * 2)) -gt "$round" ] && d=$((round - d))
+        case "$d" in 0) k=40 ;; 1) k=24 ;; 2) k=10 ;; esac
       fi
-      if [ "$d" -le 2 ]; then
-        case "$d" in 0) k=40 ;; 1) k=24 ;; *) k=10 ;; esac
-        c="${ESC}[38;2;$((r + (255 - r) * k / 100));$((g + (255 - g) * k / 100));$((b + (255 - b) * k / 100))m"
-      fi
+      [ "$k" -gt 0 ] && c="${ESC}[38;2;$((r + (255 - r) * k / 100));$((g + (255 - g) * k / 100));$((b + (255 - b) * k / 100))m"
     fi
     [ "$c" = "$last" ] || { s="$s$c"; last=$c; }
     s="$s$ch"
@@ -141,7 +152,7 @@ if [ -n "$sid" ] && [[ $input =~ $re_dur ]]; then
 fi
 R_CACHE="$STATE_DIR/render.$sid"
 if [ -n "$key" ] && [ -f "$R_CACHE" ]; then
-  { IFS=' ' read -r c_cols c_dur c_ttl c_icons bar_w
+  { IFS=' ' read -r c_cols c_dur c_ttl c_icons bar_w c_light
     IFS= read -r c_key; IFS= read -r c_out; IFS= read -r t0
     IFS= read -r k1_cells; IFS= read -r k1_block; IFS= read -r k1_colour
     IFS= read -r k1_r; IFS= read -r k1_g; IFS= read -r k1_b; IFS= read -r t1
@@ -158,7 +169,7 @@ if [ -n "$key" ] && [ -f "$R_CACHE" ]; then
   fi
   if [ -n "$replay" ]; then
     # "Not older" would miss a file written within the same second.
-    for f in "$STATE_DIR/claude-usage.json" "$STATE_DIR/claude-last-input.json" "$STATE_DIR/codex-usage.json"; do
+    for f in "$STATE_DIR/claude-usage.json" "$STATE_DIR/claude-last-input.json" "$STATE_DIR/codex-usage.json" "$CONFIG"; do
       [ -e "$f" ] && ! [ "$R_CACHE" -nt "$f" ] && { replay=""; break; }
     done
   fi
@@ -170,9 +181,11 @@ if [ -n "$key" ] && [ -f "$R_CACHE" ]; then
     [ -n "$newest" ] && [ "$newest" -nt "$LOG_CACHE" ] && replay=""
   fi
   if [ -n "$replay" ]; then
-    claude_use; codex_use "$codex_state"
-    if [ -n "$codex_mode$claude_mode" ]; then
-      clock_s=$((dur / 1000)); compose "$codex_mode" "$claude_mode"; c_out=$line
+    if [ "$c_light" = on ]; then
+      claude_use; codex_use "$codex_state"
+      if [ -n "$codex_mode$claude_mode" ]; then
+        clock_s=$((dur / 1000)); compose "$codex_mode" "$claude_mode"; c_out=$line
+      fi
     fi
     printf '%s' "$c_out"
     exit 0
@@ -466,16 +479,37 @@ countdown() { # $1=reset epoch -> cd_txt "↻6d3h" / "↻1h23m" / "↻45m", empt
   else cd_txt="↻${m}m"; sooner $((remain % 60 + 1)); fi
 }
 
-# What the segments are labelled with: words, or icons. The icons are Nerd Fonts
-# glyphs, and a script cannot tell whether the terminal's font has them, so they
-# are opt-in:  touch ~/.claude/codex-status/icons
+# What to show is the user's to choose: ~/.claude/codex-status/config, one
+# key=value a line, written by the plugin's setup skill or the installer's
+# options. Without it everything is shown, labelled in words.
+#   show=folder model codex claude ctx task   the segments, any of them
+#   countdown=on|off                          the time until a window resets
+#   icons=on|off                              icons for the three gauge labels
+#   light=on|off                              the light and the glow of a quota in use
+show=" folder model codex claude ctx task "; opt_countdown=on; opt_icons=""; opt_light=on
+if [ -f "$CONFIG" ]; then
+  while IFS='=' read -r k v || [ -n "$k" ]; do
+    case "$k" in
+      show)      show=" $v " ;;
+      countdown) opt_countdown=$v ;;
+      icons)     opt_icons=$v ;;
+      light)     opt_light=$v ;;
+    esac
+  done < "$CONFIG"
+fi
+# (1.2 switched the icons on with a marker file; it still counts where the config does not say)
+[ -n "$opt_icons" ] || { opt_icons=off; [ "$icons" = 1 ] && opt_icons=on; }
+shown() { case "$show" in *" $1 "*) return 0 ;; esac; return 1; }
+
+# The icons are Nerd Fonts glyphs, and a script cannot tell whether the
+# terminal's font has them, which is why they are a choice and not the default:
 #   codex, claude  the vendors' logos (cod-openai U+EC81, cod-claude U+EC82,
 #                  both only since Nerd Fonts 3.5.0)
 #   ctx            a speech bubble, the conversation so far
 #                  (md-message_text_outline U+F036A)
 # Spelled as UTF-8 bytes because bash 3.2 has no \u escape.
 codex_label=codex; claude_label=claude; ctx_label=ctx
-if [ "$icons" = 1 ]; then
+if [ "$opt_icons" = on ]; then
   codex_label=$'\xee\xb2\x81'; claude_label=$'\xee\xb2\x82'; ctx_label=$'\xf3\xb0\x8d\xaa'
 fi
 
@@ -491,6 +525,11 @@ if [ -n "$c5" ]; then
 fi
 [ -n "$ctx_pct" ] && ctx_num="$ctx_pct%"
 [ ${#task} -gt 30 ] && task="${task:0:29}…"
+shown codex || codex_num=""
+shown claude || claude_num=""
+shown ctx || ctx_num=""
+shown task || task=""
+[ "$opt_countdown" = on ] || { codex_cd=""; claude_cd=""; }
 
 # --- Fitting it to the terminal ------------------------------------------------
 # Cells a text takes: one per character, two for CJK and emoji. Counted on the
@@ -519,14 +558,19 @@ else
   budget=100000; bar_w=$DEFAULT_W
 fi
 
-disp_width "$dir_name$model_txt"
-plain=$((width + 3))   # the line without bars and countdowns
-rails=0; cds=0; gauges=0
+plain=0   # the line without bars and countdowns
+segs=0; rails=0; cds=0; gauges=0
+count_seg() { # $1=its width; a separator goes before every segment but the first
+  [ "$segs" -gt 0 ] && plain=$((plain + 3))
+  segs=$((segs + 1)); plain=$((plain + $1))
+}
 count_gauge() { # $1=label $2=number
   [ -n "$2" ] || return
   gauges=$((gauges + 1)); rails=$((rails + 2))
-  disp_width "$1"; plain=$((plain + 3 + width + 1 + ${#2}))
+  disp_width "$1"; count_seg $((width + 1 + ${#2}))
 }
+shown folder && { disp_width "$dir_name"; count_seg "$width"; }
+shown model && { disp_width "$model_txt"; count_seg "$width"; }
 count_gauge "$codex_label" "$codex_num"
 count_gauge "$claude_label" "$claude_num"
 count_gauge "$ctx_label" "$ctx_num"
@@ -552,7 +596,7 @@ if [ -n "$task" ]; then
   if [ "$bar_w" -gt 0 ]; then room=$((budget - with_bars - gauges * bar_w))
   elif [ -n "$show_cd" ]; then room=$((budget - plain - cds))
   else room=$((budget - plain)); fi
-  room=$((room - 5))   # " · ▸ "
+  room=$((room - 2)); [ "$segs" -gt 0 ] && room=$((room - 3))   # "▸ ", after " · "
   disp_width "$task"
   if [ "$width" -gt "$room" ] && [ "$bar_w" -gt "$MIN_W" ]; then
     give=$(( (width - room + gauges - 1) / gauges ))
@@ -599,16 +643,20 @@ usage_gauge() { # $1=label $2=5h used% $3=weekly used% $4=left% text $5=countdow
 }
 
 sep=" ${GRAY}·${RESET} "
-t0="${ESC}[1m$dir_name$RESET$sep$mcolor$model_txt$RESET"; t1=""; t2=""
+t0=""; t1=""; t2=""
 k1_cells=""; k1_block=""; k1_colour=""; k1_r=""; k1_g=""; k1_b=""
 k2_cells=""; k2_block=""; k2_colour=""; k2_r=""; k2_g=""; k2_b=""
 at=0   # the piece of text being written: t0, then t1 after the codex track, t2 after claude's
 put() { case "$at" in 0) t0="$t0$1" ;; 1) t1="$t1$1" ;; *) t2="$t2$1" ;; esac; }
+drawn=""
+seg() { [ -n "$drawn" ] && put "$sep"; drawn=1; put "$1"; }   # a segment, set off from the one before
+shown folder && seg "${ESC}[1m$dir_name$RESET"
+shown model && seg "$mcolor$model_txt$RESET"
 
 # (theme: OpenAI green #10A37F)
 if [ -n "$codex_num" ]; then
   usage_gauge "$codex_label" "$cu_pct" "$cu7_pct" "$codex_num" "$codex_cd" 16 163 127
-  put "$sep$head"
+  seg "$head"
   if [ -n "$k_cells" ]; then
     k1_cells=$k_cells; k1_block=$k_block; k1_colour=$k_colour; k1_r=$k_r; k1_g=$k_g; k1_b=$k_b; at=1
   fi
@@ -617,7 +665,7 @@ fi
 # (theme: Claude coral #D97757)
 if [ -n "$claude_num" ]; then
   usage_gauge "$claude_label" "$c5" "$c7" "$claude_num" "$claude_cd" 217 119 87
-  put "$sep$head"
+  seg "$head"
   if [ -n "$k_cells" ]; then
     k2_cells=$k_cells; k2_block=$k_block; k2_colour=$k_colour; k2_r=$k_r; k2_g=$k_g; k2_b=$k_b; at=2
   fi
@@ -637,23 +685,25 @@ if [ -n "$ctx_num" ]; then
       cells=$bar_w; [ "$ctx_pct" -lt 100 ] && cells=$((bar_w - 1))
     fi
     draw_track "$cells" "█" "$level" ""
-    put "$sep$level$ctx_label$RESET $track$ctx_num"
+    seg "$level$ctx_label$RESET $track$ctx_num"
   else
-    put "$sep$level$ctx_label $ctx_num$RESET"
+    seg "$level$ctx_label $ctx_num$RESET"
   fi
 fi
 
-[ -n "$task" ] && put "$sep${ESC}[1;38;5;214m▸ $task$RESET"
+[ -n "$task" ] && seg "${ESC}[1;38;5;214m▸ $task$RESET"
 
 clock_s=$now_s; [ -n "$dur" ] && clock_s=$((dur / 1000))
 compose "" ""; still=$line
-claude_use; codex_use "$codex_state"
-[ -n "$codex_mode$claude_mode" ] && compose "$codex_mode" "$claude_mode"
+if [ "$opt_light" = on ]; then
+  claude_use; codex_use "$codex_state"
+  [ -n "$codex_mode$claude_mode" ] && compose "$codex_mode" "$claude_mode"
+fi
 printf '%s' "$line"
 
 # Keep it for the replay: the line without a light, and its pieces.
 if [ -n "$key" ]; then
-  printf '%s\n' "${COLUMNS:--} $dur $((next_change * 1000)) $icons $bar_w" "$key" "$still" "$t0" \
+  printf '%s\n' "${COLUMNS:--} $dur $((next_change * 1000)) $icons $bar_w $opt_light" "$key" "$still" "$t0" \
     "$k1_cells" "$k1_block" "$k1_colour" "$k1_r" "$k1_g" "$k1_b" "$t1" \
     "$k2_cells" "$k2_block" "$k2_colour" "$k2_r" "$k2_g" "$k2_b" "$t2" end > "$R_CACHE"
 fi

@@ -13,7 +13,8 @@ current numbers immediately.
 
 1. Note the mtime of the two cache files, then run `~/.claude/scripts/usage-refresh.sh`
    with Bash. It refreshes both caches and prints nothing.
-   - If that script does not exist, claude-statusline is not installed here. Say so and stop.
+   - If that script does not exist, the status line is not set up here. Say so, point to
+     `/usage-statusline:setup` when this skill came with the plugin, and stop.
 2. Read the caches:
    - Codex — `~/.claude/codex-status/codex-usage.json`: `rate_limit.primary_window.used_percent`
      (5-hour), `rate_limit.secondary_window.used_percent` (weekly),
@@ -29,5 +30,5 @@ current numbers immediately.
      Claude usage endpoint rate-limiting the call (it answers bursts with 429 for a
      few minutes), or an OAuth token that expired before Claude Code rotated it.
      Report a stale half as stale rather than presenting old numbers as current.
-4. Report the numbers in a line or two. The status line picks them up within its
-   refresh interval (2s).
+4. Report the numbers in a line or two. The status line picks them up within a second
+   or two.

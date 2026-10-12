@@ -1,0 +1,14 @@
+{
+  "name": "usage-statusline",
+  "owner": {
+    "name": "zoo3323"
+  },
+  "description": "The claude-statusline status line for Claude Code, as a plugin.",
+  "plugins": [
+    {
+      "name": "usage-statusline",
+      "source": "./",
+      "description": "A status line for Claude Code: Claude and Codex usage gauges, context, the task in progress. /usage-statusline:setup turns it on and lets you choose what it shows."
+    }
+  ]
+}
