@@ -48,9 +48,9 @@ draw() { # $1=label $2=columns $3=5-hour used% $4=weekly used% $5=context% [$6=s
 }
 png() { uv run --quiet --with pillow python tools/ansi2png.py --out "assets/$1" --text-font "$TEXT_FONT" --icon-font "$ICON_FONT"; }
 
-# hero: a session at work, a codex task running — ten seconds of it
+# statusline: a session at work, a codex task running — ten seconds of it
 conf "icons=on"; codex 7 20 running; session demo busy
-for t in 0 1 2 3 4 5 6 7 8 9; do draw "" 104 41 30 42 "$t"; echo "---"; done | png hero.png
+for t in 0 1 2 3 4 5 6 7 8 9; do draw "" 104 41 30 42 "$t"; echo "---"; done | png statusline.png
 
 # how much is left: plenty, under 30%, under 10%
 session demo idle

@@ -5,7 +5,7 @@
 Claude Code 상태줄입니다. Claude와 Codex 한도가 얼마나 남았는지, 컨텍스트가 얼마나
 찼는지를 한 줄로 보여줍니다.
 
-![세션이 일하는 동안의 상태줄](assets/hero.png)
+![세션이 일하는 동안의 상태줄](assets/statusline.png)
 
 ## 설치
 

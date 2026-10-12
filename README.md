@@ -5,7 +5,7 @@
 A status line for Claude Code: how much Claude and Codex quota is left and how
 full the context is.
 
-![The status line while a session is at work](assets/hero.png)
+![The status line while a session is at work](assets/statusline.png)
 
 ## Install
 
