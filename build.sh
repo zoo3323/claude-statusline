@@ -1,5 +1,5 @@
 #!/bin/bash
-# Generates install-claude-statusline.sh from installer.template.sh and src/.
+# Generates install.sh from installer.template.sh and src/.
 #
 # The template carries one line per embedded file:
 #   @@EMBED "$SCRIPTS_DIR/statusline-codex.sh" src/statusline-codex.sh
@@ -16,7 +16,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 TEMPLATE=installer.template.sh
-OUT=install-claude-statusline.sh
+OUT=install.sh
 MANIFEST=.claude-plugin/plugin.json
 VERSION=$(tr -d '[:space:]' < VERSION)
 

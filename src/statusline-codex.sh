@@ -564,10 +564,13 @@ count_seg() { # $1=its width; a separator goes before every segment but the firs
   [ "$segs" -gt 0 ] && plain=$((plain + 3))
   segs=$((segs + 1)); plain=$((plain + $1))
 }
+# A terminal draws an icon wider than its cell, into the blank that follows.
+# Before a bar that blank is spare; before a bare number one more is needed.
+icon_gap=0; [ "$opt_icons" = on ] && icon_gap=1
 count_gauge() { # $1=label $2=number
   [ -n "$2" ] || return
   gauges=$((gauges + 1)); rails=$((rails + 2))
-  disp_width "$1"; count_seg $((width + 1 + ${#2}))
+  disp_width "$1"; count_seg $((width + 1 + icon_gap + ${#2}))
 }
 shown folder && { disp_width "$dir_name"; count_seg "$width"; }
 shown model && { disp_width "$model_txt"; count_seg "$width"; }
@@ -576,7 +579,7 @@ count_gauge "$claude_label" "$claude_num"
 count_gauge "$ctx_label" "$ctx_num"
 [ -n "$codex_cd" ] && { disp_width "$codex_cd"; cds=$((cds + 1 + width)); }
 [ -n "$claude_cd" ] && { disp_width "$claude_cd"; cds=$((cds + 1 + width)); }
-with_bars=$((plain + rails + cds))   # all but the cells of the bars
+with_bars=$((plain - gauges * icon_gap + rails + cds))   # all but the cells of the bars
 
 show_cd=1
 if [ "$gauges" -gt 0 ]; then
@@ -622,6 +625,7 @@ usage_gauge() { # $1=label $2=5h used% $3=weekly used% $4=left% text $5=countdow
   local blocks=("▁" "▂" "▃" "▄" "▅" "▆" "▇" "█")
   k_cells=""; k_block="█"; k_colour="${ESC}[38;2;$6;$7;${8}m"; k_r=$6; k_g=$7; k_b=$8
   head="$k_colour$label$RESET "
+  [ "$bar_w" -gt 0 ] || [ "$icon_gap" -eq 0 ] || head="$head "
   if [ "$used" -ge 90 ]; then k_colour=$CRIT; k_r=255; k_g=0; k_b=0
   elif [ "$used" -ge 70 ]; then k_colour=$WARN; k_r=255; k_g=175; k_b=0; fi
   if [ "$bar_w" -gt 0 ]; then
@@ -686,6 +690,8 @@ if [ -n "$ctx_num" ]; then
     fi
     draw_track "$cells" "█" "$level" ""
     seg "$level$ctx_label$RESET $track$ctx_num"
+  elif [ "$icon_gap" -eq 1 ]; then
+    seg "$level$ctx_label  $ctx_num$RESET"
   else
     seg "$level$ctx_label $ctx_num$RESET"
   fi

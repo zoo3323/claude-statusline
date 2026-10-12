@@ -375,6 +375,7 @@ check "countdown=off drops the times until a reset"          lacks "$out" "↻"
 check "… and nothing else"                                   has "$out" "codex ▕████████░░▏82% · claude ▕"
 conf "icons=on"
 check "icons=on does what the marker file of 1.2 did"        has "$(shows)" $'\xee\xb2\x82 ▕'
+check "… an icon before a bare number gets room to spread"   has "$(COLUMNS=70 shows)" $'\xee\xb2\x82  94% '
 status a busy
 conf "light=off"
 check "light=off: no light, whoever is at work"              not lit "$(payload a 6 "$soon" 34 "$week" | raw)"
@@ -403,7 +404,7 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do   # let the poll finish writing before the dir
 done
 
 # --- the installer and its options -------------------------------------------
-I="$PWD/install-claude-statusline.sh"
+I="$PWD/install.sh"
 quiet() { "$@" > /dev/null 2>&1; }
 check "the generated installer is up to date"                quiet ./build.sh --check
 install_in() { local h=$1; shift; ( export HOME="$T/$h"; mkdir -p "$HOME/.claude"; bash "$I" "$@" ) > "$T/$h.out" 2>&1; }
@@ -443,6 +444,19 @@ check "… and leaves settings.json alone"                     is "$(jq -r '.sta
 echo "# edited by hand" > "$T/h2/.claude/scripts/statusline-codex.sh"
 install_in h2 --plugin --sync
 check "--sync does nothing when the version is the same"     is "$(cat "$T/h2/.claude/scripts/statusline-codex.sh")" "# edited by hand"
+
+# --- the uninstaller ---------------------------------------------------------
+U="$PWD/uninstall.sh"
+uninstall_in() { ( export HOME="$T/$1"; bash "$U" ) > "$T/$1.un.out" 2>&1; }
+echo '{"model":"opus","hooks":{}}' > "$T/h1/.claude/settings.json"; install_in h1
+uninstall_in h1
+check "uninstalling puts settings.json back as it was"       is "$(jq -cS . "$T/h1/.claude/settings.json")" '{"hooks":{},"model":"opus"}'
+check "… and takes the scripts, the caches and the skill"    is "$(ls "$T/h1/.claude/scripts" 2>/dev/null; ls -d "$T/h1/.claude/codex-status" "$T/h1/.claude/skills/refresh" 2>/dev/null)" ""
+mkdir -p "$T/h6/.claude"
+echo '{"statusLine":{"type":"command","command":"my-own-line.sh"},"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[]},{"matcher":"mcp__codex__codex|mcp__codex__codex-reply","hooks":[]}]}}' > "$T/h6/.claude/settings.json"
+uninstall_in h6
+check "a status line that is not ours is left alone"         is "$(jq -r '.statusLine.command' "$T/h6/.claude/settings.json")" "my-own-line.sh"
+check "… the codex hooks of old versions go, others stay"    is "$(jq -c '.hooks' "$T/h6/.claude/settings.json")" '{"PreToolUse":[{"matcher":"Bash","hooks":[]}]}'
 
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

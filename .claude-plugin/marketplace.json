@@ -3,7 +3,7 @@
   "owner": {
     "name": "zoo3323"
   },
-  "description": "The claude-statusline status line for Claude Code, as a plugin.",
+  "description": "The usage-statusline status line for Claude Code, as a plugin.",
   "plugins": [
     {
       "name": "usage-statusline",

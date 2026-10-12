@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Turn on the claude-statusline status line and choose what it shows — folder, model, Claude and Codex usage gauges, context, task in progress, countdowns, icons, the in-use light. Run it again to change the choice.
+description: Turn on the usage-statusline status line and choose what it shows — folder, model, Claude and Codex usage gauges, context, task in progress, countdowns, icons, the in-use light. Run it again to change the choice.
 disable-model-invocation: true
 ---
 
@@ -58,7 +58,7 @@ Turn the answers into four values:
 Then run, with the values filled in:
 
 ```bash
-bash "${CLAUDE_PLUGIN_ROOT}/install-claude-statusline.sh" --plugin --show "folder model codex claude ctx task" --countdown on --icons off --light on
+bash "${CLAUDE_PLUGIN_ROOT}/install.sh" --plugin --show "folder model codex claude ctx task" --countdown on --icons off --light on
 ```
 
 The script fetches `jq` into `~/.local/bin` if it is missing, backs up `settings.json`

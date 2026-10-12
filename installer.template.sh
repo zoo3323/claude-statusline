@@ -1,6 +1,6 @@
 #!/bin/bash
 # Installer for the Claude Code status line.
-#   curl -fsSL https://raw.githubusercontent.com/zoo3323/claude-statusline/main/install-claude-statusline.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/zoo3323/usage-statusline/main/install.sh | bash
 # Options go after `bash -s --`; see usage() below. The plugin's setup skill runs
 # this same file.
 #
@@ -23,7 +23,7 @@ LOCAL_BIN="$HOME/.local/bin"
 
 usage() {
   cat <<'EOF'
-Usage: install-claude-statusline.sh [options]
+Usage: install.sh [options]
 
 What the status line shows (kept from the last time when left out):
   --show "<segments>"   any of: folder model codex claude ctx task
@@ -274,7 +274,7 @@ main() {
   remove_legacy_files
   printf '%s\n' "$VERSION" > "$STATE_DIR/installed-version"
 
-  echo "✅ Installed claude-statusline $VERSION"
+  echo "✅ Installed usage-statusline $VERSION"
   echo "   - Status line: it appears at the bottom, in a new session at the latest"
   if [ -n "$PLUGIN" ]; then
     echo "   - Refresh usage now: cu-refresh in a terminal, /usage-statusline:refresh inside Claude Code"

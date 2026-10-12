@@ -1,6 +1,6 @@
 ---
 name: uninstall
-description: Remove the claude-statusline status line — its scripts, its caches and the statusLine entry in settings.json. The plugin itself stays until it is uninstalled with /plugin.
+description: Remove the usage-statusline status line — its scripts, its caches and the statusLine entry in settings.json. The plugin itself stays until it is uninstalled with /plugin.
 disable-model-invocation: true
 ---
 
@@ -17,7 +17,7 @@ This undoes what `/usage-statusline:setup` did. It does not uninstall the plugin
 2. Once they confirm, run:
 
    ```bash
-   bash "${CLAUDE_PLUGIN_ROOT}/uninstall-claude-statusline.sh"
+   bash "${CLAUDE_PLUGIN_ROOT}/uninstall.sh"
    ```
 
    It backs up `settings.json` first, leaves every other setting alone, and prints what

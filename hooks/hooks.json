@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}\"/install-claude-statusline.sh --plugin --sync >/dev/null 2>&1 || true"
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}\"/install.sh --plugin --sync >/dev/null 2>&1 || true"
           }
         ]
       }
