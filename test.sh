@@ -266,6 +266,13 @@ check "… that runs along it"                                 not still claude
 check "… as does the one on the codex gauge"                 not still codex
 draw 17000
 check "… and comes round every ten seconds"                  is "$claude_part" "$seen"
+shades() { # $1=part of a raw line -> how many different shades the light on it has
+  grep -o '\[38;2;[0-9;]*m' <<< "$1" | grep -v -e '\[38;2;16;163;127m' -e '\[38;2;217;119;87m' | sort -u | wc -l | tr -d ' '
+}
+COLUMNS=90 draw 8000    # eight seconds in, the light is centred on cell 4: the last one of a bar of five
+check "on a short bar the light falls off in three steps"    is "$(shades "$claude_part")" "3"
+COLUMNS=200 draw 8000
+check "… and in more, lower ones where the bar is long"      is "$(shades "$claude_part")" "5"
 echo '{"type":"event_msg","payload":{"type":"task_complete"}}' >> "$LOGS/rollout-1.jsonl"
 draw
 check "the codex light goes out when the task is done"       not lit "$codex_part"

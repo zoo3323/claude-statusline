@@ -12,7 +12,7 @@
 # leaving a truncated script behind.
 set -e
 
-VERSION="1.6.0"
+VERSION="1.6.1"
 
 CLAUDE_DIR="$HOME/.claude"
 SCRIPTS_DIR="$CLAUDE_DIR/scripts"
@@ -209,11 +209,18 @@ codex_use() { # $1=the verdict -> codex_mode
 
 # The track of a gauge: $1 cells of block $2 in colour $3, the rest empty, on a
 # dark background with thin rails (▕ ▏) at both ends. $4 puts a light on it
-# (empty: none) and $5 $6 $7 is the colour as r g b: the cells within two of the
-# light's centre are lightened towards white, the centre the most, and never by
-# much — it is a sheen, not a lamp. $4 is the cell it is centred on, or "tip"
-# for the glow: the bar grows lighter towards its end, a little with every cell,
-# so that it reads as a bar that is lit and not as a few cells of another colour.
+# (empty: none) and $5 $6 $7 is the colour as r g b: the cells around the light's
+# centre are lightened towards white, the centre the most, and never by much —
+# it is a sheen, not a lamp. $4 is the cell it is centred on, or "tip" for the
+# glow: the bar grows lighter towards its end, a little with every cell, so that
+# it reads as a bar that is lit and not as a few cells of another colour.
+#
+# The light is as wide as the bar has room for: two cells to either side of the
+# centre on a short bar, four on the longest. A cell is one flat colour, so the
+# fall-off towards the edges is a staircase, and a light of the same five cells
+# on a bar of fourteen was three hard steps in a small patch. More cells make
+# more and lower steps; at two cells a side they are the 40, 24 and 10 percent
+# the light was tuned to.
 #
 # The running light moves LIGHT_STEP cells to the left with every second; there
 # is no moving it more often, Claude Code re-runs the status line once a second
@@ -222,9 +229,11 @@ codex_use() { # $1=the verdict -> codex_mode
 # behind.
 LIGHT_STEP=2
 LIGHT_EVERY=10
-GLOW=35   # how much lighter, in percent towards white, the end of a glowing bar is
+LIGHT=40  # how much lighter, in percent towards white, the centre of the running light is
+GLOW=35   # … and the end of a glowing bar
 draw_track() { # -> track
   local cells=$1 block=$2 colour=$3 light=$4 round=$((LIGHT_EVERY * LIGHT_STEP)) i ch c d k r g b last="" s=""
+  local n=$((bar_w / 4 + 2)) m   # the light reaches n-1 cells to either side of its centre
   for ((i=0; i<bar_w; i++)); do
     if [ "$i" -lt "$cells" ]; then ch=$block; c=$colour; r=$5; g=$6; b=$7
     else ch="░"; c=$EMPTY; r=88; g=88; b=88; fi
@@ -234,7 +243,7 @@ draw_track() { # -> track
         [ "$i" -lt "$cells" ] && k=$((GLOW * (i + 1) / cells))
       else
         d=$(( (i - light + round) % round )); [ $((d * 2)) -gt "$round" ] && d=$((round - d))
-        case "$d" in 0) k=40 ;; 1) k=24 ;; 2) k=10 ;; esac
+        m=$((n - d)); [ "$m" -gt 0 ] && k=$((LIGHT * m * (7 * n + 3 * m) / (10 * n * n)))
       fi
       [ "$k" -gt 0 ] && c="${ESC}[38;2;$((r + (255 - r) * k / 100));$((g + (255 - g) * k / 100));$((b + (255 - b) * k / 100))m"
     fi
