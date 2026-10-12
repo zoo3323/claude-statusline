@@ -55,7 +55,7 @@ Codex CLI에 로그인돼 있어야 나옵니다.
 
 ## 표시 항목 고르기
 
-![글자와 아이콘, 리셋 시간 숨김, 일부만 표시](assets/choose.png)
+![리셋 시간 숨김, 일부만 표시](assets/choose.png)
 
 `/usage-statusline:setup`을 다시 실행하거나, 스크립트에 옵션을 주거나(`--help`),
 `~/.claude/codex-status/config`를 고칩니다.
@@ -63,7 +63,6 @@ Codex CLI에 로그인돼 있어야 나옵니다.
 ```
 show=folder model codex claude ctx
 countdown=on
-icons=off
 light=on
 ```
 

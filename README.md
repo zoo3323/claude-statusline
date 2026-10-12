@@ -55,7 +55,7 @@ The gauges shrink with the terminal, then give way to the bare numbers.
 
 ## Your choice
 
-![Words or icons, without countdowns, a subset](assets/choose.png)
+![Without countdowns, a subset](assets/choose.png)
 
 Run `/usage-statusline:setup` again, pass options to the script (`--help`), or
 edit `~/.claude/codex-status/config`:
@@ -63,11 +63,10 @@ edit `~/.claude/codex-status/config`:
 ```
 show=folder model codex claude ctx
 countdown=on
-icons=off
 light=on
 ```
 
-Icons need a terminal font with Nerd Fonts 3.5 glyphs. Ghostty 1.3 bundles 3.4:
+The icons need a terminal font with Nerd Fonts 3.5 glyphs. Ghostty 1.3 bundles 3.4:
 install *Symbols Nerd Font* and add
 `font-codepoint-map = U+EC81-U+EC82=Symbols Nerd Font`.
 

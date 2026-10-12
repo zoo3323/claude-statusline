@@ -12,7 +12,7 @@
 # leaving a truncated script behind.
 set -e
 
-VERSION="1.5.0"
+VERSION="1.6.0"
 
 CLAUDE_DIR="$HOME/.claude"
 SCRIPTS_DIR="$CLAUDE_DIR/scripts"
@@ -28,8 +28,6 @@ Usage: install.sh [options]
 What the status line shows (kept from the last time when left out):
   --show "<segments>"   any of: folder model codex claude ctx
   --countdown on|off    the time until a usage window resets
-  --icons on|off        icons instead of the words codex, claude and ctx
-                        (the terminal's font needs Nerd Fonts 3.5 glyphs)
   --light on|off        the light and the glow on a quota that is in use
 
   --plugin              run from the Claude Code plugin: leave the stand-alone
@@ -1038,9 +1036,9 @@ fi
 }
 
 # What the status line shows — ~/.claude/codex-status/config, see "What to draw"
-# in statusline-codex.sh. The file is only written when there is a choice to
-# record: an option given here, or the marker file with which 1.2 switched the
-# icons on, which this file replaces.
+# in statusline-codex.sh. An installation that has no config yet gets one: the
+# gauges are labelled with icons, and the script by itself would spell the
+# labels out. --sync only writes when there is something to carry over.
 write_config() {
   local cfg="$STATE_DIR/config" show="" countdown="" icons="" light="" k v write=""
   if [ -f "$cfg" ]; then
@@ -1048,6 +1046,7 @@ write_config() {
       case "$k" in show) show=$v ;; countdown) countdown=$v ;; icons) icons=$v ;; light) light=$v ;; esac
     done < "$cfg"
   fi
+  [ -f "$cfg" ] || [ -n "$SYNC" ] || write=1
   if [ -e "$STATE_DIR/icons" ]; then
     [ -n "$icons" ] || icons=on
     rm -f "$STATE_DIR/icons"; write=1
@@ -1062,7 +1061,7 @@ write_config() {
   esac
   [ -n "$write" ] || return 0
   printf 'show=%s\ncountdown=%s\nicons=%s\nlight=%s\n' \
-    "${show:-folder model codex claude ctx}" "${countdown:-on}" "${icons:-off}" "${light:-on}" > "$cfg.tmp.$$" \
+    "${show:-folder model codex claude ctx}" "${countdown:-on}" "${icons:-on}" "${light:-on}" > "$cfg.tmp.$$" \
     && mv "$cfg.tmp.$$" "$cfg"
 }
 

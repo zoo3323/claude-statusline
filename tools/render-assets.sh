@@ -68,7 +68,6 @@ codex 7 20; session demo idle
 for c in 150 104 88 72 52; do draw "$c" "$c" 41 30 42; done | png widths.png
 
 # what to show
-{ conf "icons=off";                           draw "icons=off" 96 41 30 42
-  conf "icons=on";                            draw "icons=on" 96 41 30 42
+{ conf "icons=on";                            draw "everything" 96 41 30 42
   conf "icons=on" "countdown=off";            draw "countdown=off" 96 41 30 42
   conf "icons=on" "show=folder claude ctx";   draw "show=folder claude ctx" 96 41 30 42; } | png choose.png

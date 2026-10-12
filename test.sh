@@ -397,7 +397,7 @@ conf_of() { tr '\n' '|' < "$T/$1/.claude/codex-status/config" 2>/dev/null; }
 install_in h1
 check "a plain install sets the status line"                 has "$(jq -r '.statusLine.command' "$T/h1/.claude/settings.json")" "/.claude/scripts/statusline-codex.sh"
 check "… brings the stand-alone /refresh skill"              test -f "$T/h1/.claude/skills/refresh/SKILL.md"
-check "… and writes no config: there is nothing to record"   not test -e "$T/h1/.claude/codex-status/config"
+check "… and labels the gauges with icons"                   is "$(conf_of h1)" "show=folder model codex claude ctx|countdown=on|icons=on|light=on|"
 
 install_in h2 --plugin --show "folder claude ctx" --countdown off --icons on --light off
 check "options record what to show"                          is "$(conf_of h2)" "show=folder claude ctx|countdown=off|icons=on|light=off|"
