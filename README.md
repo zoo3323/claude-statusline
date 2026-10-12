@@ -2,8 +2,8 @@
 
 **English** · [한국어](README.ko.md)
 
-A status line for Claude Code: how much Claude and Codex quota is left, how full
-the context is, what is being worked on.
+A status line for Claude Code: how much Claude and Codex quota is left and how
+full the context is.
 
 ![The status line while a session is at work](assets/hero.png)
 
@@ -61,7 +61,7 @@ Run `/usage-statusline:setup` again, pass options to the script (`--help`), or
 edit `~/.claude/codex-status/config`:
 
 ```
-show=folder model codex claude ctx task
+show=folder model codex claude ctx
 countdown=on
 icons=off
 light=on

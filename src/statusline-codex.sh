@@ -1,6 +1,6 @@
 #!/bin/bash
 # Claude Code statusLine:
-#   folder | model (effort) | codex usage | claude usage | context | task
+#   folder | model (effort) | codex usage | claude usage | context
 #
 # Claude Code runs this every second in every open session, visible or not, and
 # nothing stays in memory between runs — what a session costs is what one run
@@ -298,28 +298,19 @@ elif [ -n "$cu_line" ]; then
   codex_json=$cu_line; codex_shape=log
 fi
 
-# The other two sources of Claude usage (see below), and the task in progress.
-saved_json=""; poll_json=""; tasks_json=""
+# The other two sources of Claude usage (see below).
+saved_json=""; poll_json=""
 [ -f "$LAST_INPUT" ] && IFS= read -r -d '' saved_json < "$LAST_INPUT"
 [ -f "$CL_CACHE" ] && IFS= read -r -d '' poll_json < "$CL_CACHE"
-tasks_dir="$HOME/.claude/tasks/$sid"
-if [ -d "$tasks_dir" ]; then
-  for f in "$tasks_dir"/*.json; do
-    [ -f "$f" ] || continue
-    IFS= read -r -d '' t < "$f"
-    case "$t" in *in_progress*) tasks_json="${tasks_json:+$tasks_json,}$t" ;; esac
-  done
-  [ -n "$tasks_json" ] && tasks_json="[$tasks_json]"
-fi
 
 # One jq pass pulls every number the render needs out of all of them,
 # tab-separated. A missing value is emitted as "-" rather than an empty field:
 # tab counts as IFS whitespace, so empty fields would collapse and shift every
 # later column. A source that is not valid JSON counts as absent.
 IFS=$'\t' read -r session_id transcript cur_dir model effort ctx_pct \
-                  l5 l5r l7 l7r p5 p5r p7 p7r a5 a5r a7 a7r cu_pct cu7_pct cu_reset task <<< "$(
+                  l5 l5r l7 l7r p5 p5r p7 p7r a5 a5r a7 a7r cu_pct cu7_pct cu_reset <<< "$(
   jq -r --arg saved "$saved_json" --arg poll "$poll_json" --arg codex "$codex_json" \
-        --arg shape "$codex_shape" --arg tasks "$tasks_json" '
+        --arg shape "$codex_shape" '
   def at(f): try f catch null;
   def v(d): if type == "number" or (type == "string" and . != "") then . else d end;
   def n: if type == "number" then floor else v("-") end;
@@ -339,10 +330,7 @@ IFS=$'\t' read -r session_id transcript cur_dir model effort ctx_pct \
     + ($saved | obj | at(.rate_limits) | if type == "object" then . else {} end | windows)
     + ($poll | obj | windows)
     + [ (at($cx.primary.used_percent) | n), (at($cx.secondary.used_percent) | n),
-        (at($cx.primary.resets_at) // at($cx.primary.reset_at) | v("-")),
-        ([ $tasks | fromjson? // [] | if type == "array" then .[] else empty end
-           | select(type == "object" and .status == "in_progress") | (.activeForm // .subject)
-           | select(type == "string") | gsub("[\\t\\r\\n]+"; " ") ][0] | v("-")) ]
+        (at($cx.primary.resets_at) // at($cx.primary.reset_at) | v("-")) ]
   | @tsv' <<< "$input" 2>/dev/null)"
 [ "$session_id" = "-" ] && session_id=""
 [ "$transcript" = "-" ] && transcript=""
@@ -352,7 +340,6 @@ IFS=$'\t' read -r session_id transcript cur_dir model effort ctx_pct \
 [ "$cu_pct" = "-" ] && cu_pct=""
 [ "$cu7_pct" = "-" ] && cu7_pct=""
 [ "$cu_reset" = "-" ] && cu_reset=""
-[ "$task" = "-" ] && task=""
 
 dir_name=${cur_dir%/}; dir_name=${dir_name##*/}
 [ -n "$dir_name" ] || dir_name=$cur_dir
@@ -482,11 +469,11 @@ countdown() { # $1=reset epoch -> cd_txt "↻6d3h" / "↻1h23m" / "↻45m", empt
 # What to show is the user's to choose: ~/.claude/codex-status/config, one
 # key=value a line, written by the plugin's setup skill or the installer's
 # options. Without it everything is shown, labelled in words.
-#   show=folder model codex claude ctx task   the segments, any of them
+#   show=folder model codex claude ctx        the segments, any of them
 #   countdown=on|off                          the time until a window resets
 #   icons=on|off                              icons for the three gauge labels
 #   light=on|off                              the light and the glow of a quota in use
-show=" folder model codex claude ctx task "; opt_countdown=on; opt_icons=""; opt_light=on
+show=" folder model codex claude ctx "; opt_countdown=on; opt_icons=""; opt_light=on
 if [ -f "$CONFIG" ]; then
   while IFS='=' read -r k v || [ -n "$k" ]; do
     case "$k" in
@@ -524,11 +511,9 @@ if [ -n "$c5" ]; then
   [ "$c7r" -gt "$now_s" ] && sooner $((c7r - now_s + 1))
 fi
 [ -n "$ctx_pct" ] && ctx_num="$ctx_pct%"
-[ ${#task} -gt 30 ] && task="${task:0:29}…"
 shown codex || codex_num=""
 shown claude || claude_num=""
 shown ctx || ctx_num=""
-shown task || task=""
 [ "$opt_countdown" = on ] || { codex_cd=""; claude_cd=""; }
 
 # --- Fitting it to the terminal ------------------------------------------------
@@ -591,29 +576,6 @@ if [ "$gauges" -gt 0 ]; then
   fi
 else
   bar_w=0
-fi
-
-# The task takes what is left. Bars give way to it, down to their minimum, and
-# after that it is cut to fit — or left out when not even a few cells remain.
-if [ -n "$task" ]; then
-  if [ "$bar_w" -gt 0 ]; then room=$((budget - with_bars - gauges * bar_w))
-  elif [ -n "$show_cd" ]; then room=$((budget - plain - cds))
-  else room=$((budget - plain)); fi
-  room=$((room - 2)); [ "$segs" -gt 0 ] && room=$((room - 3))   # "▸ ", after " · "
-  disp_width "$task"
-  if [ "$width" -gt "$room" ] && [ "$bar_w" -gt "$MIN_W" ]; then
-    give=$(( (width - room + gauges - 1) / gauges ))
-    [ $((bar_w - give)) -lt "$MIN_W" ] && give=$((bar_w - MIN_W))
-    bar_w=$((bar_w - give)); room=$((room + give * gauges))
-  fi
-  if [ "$width" -gt "$room" ]; then
-    k=${#task}; [ "$k" -gt "$room" ] && k=$room
-    while [ "$k" -gt 0 ]; do
-      disp_width "${task:0:k}…"; [ "$width" -le "$room" ] && break
-      k=$((k - 1))
-    done
-    if [ "$k" -ge 4 ]; then task="${task:0:k}…"; else task=""; fi
-  fi
 fi
 
 # --- Drawing -------------------------------------------------------------------
@@ -696,8 +658,6 @@ if [ -n "$ctx_num" ]; then
     seg "$level$ctx_label $ctx_num$RESET"
   fi
 fi
-
-[ -n "$task" ] && seg "${ESC}[1;38;5;214m▸ $task$RESET"
 
 clock_s=$now_s; [ -n "$dur" ] && clock_s=$((dur / 1000))
 compose "" ""; still=$line

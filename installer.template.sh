@@ -26,7 +26,7 @@ usage() {
 Usage: install.sh [options]
 
 What the status line shows (kept from the last time when left out):
-  --show "<segments>"   any of: folder model codex claude ctx task
+  --show "<segments>"   any of: folder model codex claude ctx
   --countdown on|off    the time until a usage window resets
   --icons on|off        icons instead of the words codex, claude and ctx
                         (the terminal's font needs Nerd Fonts 3.5 glyphs)
@@ -48,7 +48,7 @@ parse_args() {
         OPT_SHOW=$2
         [ -n "$OPT_SHOW" ] || { echo "❌ --show needs at least one segment"; return 2; }
         for s in $OPT_SHOW; do
-          case "$s" in folder|model|codex|claude|ctx|task) ;;
+          case "$s" in folder|model|codex|claude|ctx) ;;
             *) echo "❌ --show: unknown segment '$s'"; return 2 ;;
           esac
         done
@@ -172,9 +172,13 @@ write_config() {
   [ -n "$OPT_COUNTDOWN" ] && { countdown=$OPT_COUNTDOWN; write=1; }
   [ -n "$OPT_ICONS" ] && { icons=$OPT_ICONS; write=1; }
   [ -n "$OPT_LIGHT" ] && { light=$OPT_LIGHT; write=1; }
+  # (up to 1.4 there was a sixth segment, the task in progress)
+  case " $show " in *" task "*)
+    show=" $show "; show=${show/ task / }; show=${show# }; show=${show% }; write=1 ;;
+  esac
   [ -n "$write" ] || return 0
   printf 'show=%s\ncountdown=%s\nicons=%s\nlight=%s\n' \
-    "${show:-folder model codex claude ctx task}" "${countdown:-on}" "${icons:-off}" "${light:-on}" > "$cfg.tmp.$$" \
+    "${show:-folder model codex claude ctx}" "${countdown:-on}" "${icons:-off}" "${light:-on}" > "$cfg.tmp.$$" \
     && mv "$cfg.tmp.$$" "$cfg"
 }
 

@@ -20,7 +20,7 @@ export HOME="$T/home"
 unset CLAUDE_EFFORT COLUMNS
 STATE="$HOME/.claude/codex-status"
 LOGS="$HOME/.codex/sessions/2026/01/01"
-mkdir -p "$STATE" "$LOGS" "$HOME/.claude/scripts" "$HOME/.claude/sessions" "$HOME/.claude/tasks/demo"
+mkdir -p "$STATE" "$LOGS" "$HOME/.claude/scripts" "$HOME/.claude/sessions"
 printf '#!/bin/bash\nexit 0\n' > "$HOME/.claude/scripts/usage-refresh.sh"; chmod +x "$HOME/.claude/scripts/usage-refresh.sh"
 now=$(date +%s)
 
@@ -34,7 +34,6 @@ codex() { # $1=5-hour used% $2=weekly used% [$3=task running]
 session() { # $1=whose (demo: this one, other: another)  $2=busy|idle
   printf '{"pid":%s,"sessionId":"%s","status":"%s"}' "$CLAUDE_PID" "$1" "$2" > "$HOME/.claude/sessions/$CLAUDE_PID.json"
 }
-task() { rm -f "$HOME/.claude/tasks/demo"/*; [ -n "$1" ] && printf '{"status":"in_progress","activeForm":"%s"}' "$1" > "$HOME/.claude/tasks/demo/1.json"; return 0; }
 draw() { # $1=label $2=columns $3=5-hour used% $4=weekly used% $5=context% [$6=session clock, s]
   touch "$STATE/usage.last"
   printf '%s\t' "$1"
@@ -50,11 +49,11 @@ draw() { # $1=label $2=columns $3=5-hour used% $4=weekly used% $5=context% [$6=s
 png() { uv run --quiet --with pillow python tools/ansi2png.py --out "assets/$1" --text-font "$TEXT_FONT" --icon-font "$ICON_FONT"; }
 
 # hero: a session at work, a codex task running — ten seconds of it
-conf "icons=on"; codex 7 20 running; session demo busy; task "Running tests"
-for t in 0 1 2 3 4 5 6 7 8 9; do draw "" 112 41 30 42 "$t"; echo "---"; done | png hero.png
+conf "icons=on"; codex 7 20 running; session demo busy
+for t in 0 1 2 3 4 5 6 7 8 9; do draw "" 104 41 30 42 "$t"; echo "---"; done | png hero.png
 
 # how much is left: plenty, under 30%, under 10%
-task ""; session demo idle
+session demo idle
 { codex 7 20;  draw "" 92 18 25 18
   codex 72 55; draw "" 92 75 80 74
   codex 31 60; draw "" 92 94 91 93; } | png levels.png

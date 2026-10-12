@@ -73,7 +73,7 @@ untouched() { [ -n "$(find "$1" -mmin +1440 2>/dev/null)" ]; }         # …and 
 fetched() { grep -q "$1" "$HOME/curl.log" 2>/dev/null; }
 reset_state() {
   rm -f "$STATE"/* "$LOGS"/* "$HOME"/*.jsonl "$HOME/curl.log"
-  rm -rf "$HOME/.claude/sessions" "$HOME/.claude/tasks"
+  rm -rf "$HOME/.claude/sessions"
 }
 raw() { # stdin: payload -> the line as it is written, colour codes and all
   touch "$STATE/usage.last"
@@ -218,22 +218,6 @@ check "… the context one too"                                has "$out" "ctx 1
 check "… and no gauge at all"                                lacks "$out" "▕"
 check "narrower still: the countdowns go"                    has "$(wide 60)" "codex 82% · claude 92% · ctx 12%"
 
-mkdir -p "$HOME/.claude/tasks/a"
-echo '{"status":"completed","subject":"done before"}' > "$HOME/.claude/tasks/a/1.json"
-echo '{"status":"in_progress","subject":"s","activeForm":"Reticulating the splines"}' > "$HOME/.claude/tasks/a/2.json"
-check "the task in progress closes the line"                 has "$(ctx 12)" "▏12% · ▸ Reticulating the splines"
-out=$(wide 140)
-check "with room to spare it leaves the gauges alone"        has "$out" "codex ▕██████████░░▏82%"
-check "…"                                                    has "$out" "▸ Reticulating the splines"
-out=$(wide 120)
-check "short of room the gauges give way to it"              has "$out" "codex ▕█████░▏82%"
-check "…"                                                    has "$out" "▸ Reticulating the splines"
-out=$(wide 110)
-check "… but not below their minimum"                        has "$out" "codex ▕████░▏82%"
-check "… then the task is cut instead"                       has "$out" "▸ Reticulating the"
-check "…"                                                    lacks "$out" "splines"
-check "and left out when hardly any of it would fit"         lacks "$(wide 70)" "▸"
-
 # --- a gauge in use ----------------------------------------------------------
 reset_state
 printf '%s\n' '{"type":"event_msg","payload":{"type":"task_started"}}' \
@@ -369,7 +353,7 @@ conf "show=claude"
 out=$(shows)
 check "a single segment stands without a separator"          is "${out%%▕*}" "claude "
 check "…"                                                    lacks "$out" " · "
-conf "show=folder model codex claude ctx task" "countdown=off"
+conf "show=folder model codex claude ctx" "countdown=off"
 out=$(shows)
 check "countdown=off drops the times until a reset"          lacks "$out" "↻"
 check "… and nothing else"                                   has "$out" "codex ▕████████░░▏82% · claude ▕"
@@ -427,8 +411,12 @@ check "… before anything is installed"                       not test -e "$T/h
 
 mkdir -p "$T/h4/.claude/codex-status"; : > "$T/h4/.claude/codex-status/icons"
 install_in h4
-check "the icons marker of 1.2 becomes a config line"        is "$(conf_of h4)" "show=folder model codex claude ctx task|countdown=on|icons=on|light=on|"
+check "the icons marker of 1.2 becomes a config line"        is "$(conf_of h4)" "show=folder model codex claude ctx|countdown=on|icons=on|light=on|"
 check "… and is gone"                                        not test -e "$T/h4/.claude/codex-status/icons"
+
+printf 'show=folder task ctx\nicons=on\n' > "$T/h4/.claude/codex-status/config"
+install_in h4
+check "the task segment of 1.4 is dropped from a config"     is "$(conf_of h4)" "show=folder ctx|countdown=on|icons=on|light=on|"
 
 install_in h5 --plugin --sync
 check "--sync sets nothing up where nothing was"             not test -e "$T/h5/.claude/scripts"

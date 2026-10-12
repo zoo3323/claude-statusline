@@ -8,7 +8,7 @@
     {
       "name": "usage-statusline",
       "source": "./",
-      "description": "A status line for Claude Code: Claude and Codex usage gauges, context, the task in progress. /usage-statusline:setup turns it on and lets you choose what it shows."
+      "description": "A status line for Claude Code: Claude and Codex usage gauges and a context gauge. /usage-statusline:setup turns it on and lets you choose what it shows."
     }
   ]
 }

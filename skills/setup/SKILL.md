@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Turn on the usage-statusline status line and choose what it shows — folder, model, Claude and Codex usage gauges, context, task in progress, countdowns, icons, the in-use light. Run it again to change the choice.
+description: Turn on the usage-statusline status line and choose what it shows — folder, model, Claude and Codex usage gauges, context, countdowns, icons, the in-use light. Run it again to change the choice.
 disable-model-invocation: true
 ---
 
@@ -30,8 +30,7 @@ them.
 Ask all three in one AskUserQuestion call. Where that tool is not available, ask the
 same in plain text and wait for the answer.
 
-1. **Session** (several can be chosen): Folder name · Model and effort · Context gauge ·
-   Task in progress
+1. **Session** (several can be chosen): Folder name · Model and effort · Context gauge
 2. **Usage** (several can be chosen): Claude usage gauge · Codex usage gauge · Time until
    a window resets · In-use light
 3. **Labels** (one): Words (`codex`, `claude`, `ctx`) · Icons (the OpenAI and Claude logos
@@ -43,14 +42,14 @@ Say these two things with the questions, briefly:
 - Icons are Nerd Fonts glyphs. The two logos exist only since Nerd Fonts 3.5.0, so the
   terminal's font must have them; otherwise they show as empty boxes. Words always work.
 
-At least one of the six segments (folder, model, context, task, Claude gauge, Codex
-gauge) has to be chosen. If none is, say so and ask again.
+At least one of the five segments (folder, model, context, Claude gauge, Codex gauge)
+has to be chosen. If none is, say so and ask again.
 
 ## 3. Apply
 
 Turn the answers into four values:
 
-- `show`: the chosen segments out of `folder model codex claude ctx task`, in that order
+- `show`: the chosen segments out of `folder model codex claude ctx`, in that order
 - `countdown`: `on` if "Time until a window resets" was chosen, else `off`
 - `light`: `on` if "In-use light" was chosen, else `off`
 - `icons`: `on` for icons, `off` for words
@@ -58,7 +57,7 @@ Turn the answers into four values:
 Then run, with the values filled in:
 
 ```bash
-bash "${CLAUDE_PLUGIN_ROOT}/install.sh" --plugin --show "folder model codex claude ctx task" --countdown on --icons off --light on
+bash "${CLAUDE_PLUGIN_ROOT}/install.sh" --plugin --show "folder model codex claude ctx" --countdown on --icons off --light on
 ```
 
 The script fetches `jq` into `~/.local/bin` if it is missing, backs up `settings.json`

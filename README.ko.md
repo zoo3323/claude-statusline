@@ -3,7 +3,7 @@
 [English](README.md) · **한국어**
 
 Claude Code 상태줄입니다. Claude와 Codex 한도가 얼마나 남았는지, 컨텍스트가 얼마나
-찼는지, 지금 무슨 작업 중인지를 한 줄로 보여줍니다.
+찼는지를 한 줄로 보여줍니다.
 
 ![세션이 일하는 동안의 상태줄](assets/hero.png)
 
@@ -61,7 +61,7 @@ Codex CLI에 로그인돼 있어야 나옵니다.
 `~/.claude/codex-status/config`를 고칩니다.
 
 ```
-show=folder model codex claude ctx task
+show=folder model codex claude ctx
 countdown=on
 icons=off
 light=on
