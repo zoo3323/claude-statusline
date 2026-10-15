@@ -1,6 +1,6 @@
 {
   "name": "usage-statusline",
-  "version": "1.6.1",
+  "version": "1.6.2",
   "description": "A status line for Claude Code: Claude and Codex usage gauges that stay live while you are idle, and a context gauge. Run /usage-statusline:setup to turn it on and choose what it shows.",
   "author": {
     "name": "zoo3323"

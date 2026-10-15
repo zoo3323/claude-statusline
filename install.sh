@@ -12,7 +12,7 @@
 # leaving a truncated script behind.
 set -e
 
-VERSION="1.6.1"
+VERSION="1.6.2"
 
 CLAUDE_DIR="$HOME/.claude"
 SCRIPTS_DIR="$CLAUDE_DIR/scripts"
@@ -355,6 +355,11 @@ esac
 # listed again at most every 10 seconds, and one is read again only when its
 # mtime or size changed.
 CODEX_EVENTS='"rate_limits"|"type":"event_msg","payload":\{"type":"(task_started|task_complete|turn_aborted)"'
+scan_events() { awk '
+  /"rate_limits"/ { limits = $0; next }
+  /"task_started"/ { state = "run"; next }
+  { state = "done" }
+  END { print state; print limits }'; }
 list_logs() { log_files=$(ls -t "$HOME/.codex/sessions"/*/*/*/rollout-*.jsonl 2>/dev/null); }
 c_scan=0; c_newest=""; c_sig=""; sess_m=0; c_state=""; cu_line=""; c_end=""
 [ -f "$LOG_CACHE" ] && { IFS= read -r c_scan; IFS= read -r c_newest; IFS= read -r c_sig; IFS= read -r sess_m
@@ -411,12 +416,13 @@ if [ -n "$newest" ] && [ "$newest $newest_sig" != "$c_newest $c_sig" ]; then
   tried=0; codex_state=""; cu_line=""; sess_m=0
   while IFS= read -r lf && [ "$tried" -lt 3 ]; do   # the three newest logs
     tried=$((tried + 1))
-    # The run state and the last rate_limits line, in that order.
-    found=$(grep -E "$CODEX_EVENTS" "$lf" 2>/dev/null | awk '
-      /"rate_limits"/ { limits = $0; next }
-      /"task_started"/ { state = "run"; next }
-      { state = "done" }
-      END { print state; print limits }')
+    # The run state and the last rate_limits line, in that order. Only the
+    # last lines matter and a log runs past 100MB, so read its tail first and
+    # the whole file only when the tail holds no rate_limits line.
+    found=$(tail -c 2000000 "$lf" 2>/dev/null | grep -E "$CODEX_EVENTS" | scan_events)
+    case "$found" in *$'\n'?*) ;; *)
+      found=$(grep -E "$CODEX_EVENTS" "$lf" 2>/dev/null | scan_events) ;;
+    esac
     [ "$tried" -eq 1 ] && codex_state=${found%%$'\n'*}
     case "$found" in *$'\n'*)
       cu_line=${found#*$'\n'}
